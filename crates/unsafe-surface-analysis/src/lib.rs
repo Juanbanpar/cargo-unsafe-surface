@@ -4,6 +4,25 @@
 //! The default backend parses Rust sources with `syn`; it never executes
 //! build scripts, procedural macros or binaries from the analysed
 //! repository. See `docs/adr/0001-analysis-approach.md` for the rationale.
+//!
+//! # Pipeline
+//!
+//! 1. [`source`] walks a crate's module tree starting at the crate root,
+//!    honouring `#[cfg]` gates (over-approximating unknown predicates) and
+//!    enforcing [`Limits`] against denial-of-service.
+//! 2. [`index`] builds per-crate symbol tables (items, impls, unions,
+//!    mutable statics, imports).
+//! 3. Classification, call-graph construction and reachability build on
+//!    these structures.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+
+pub mod cfg_eval;
+pub mod error;
+pub mod index;
+pub mod limits;
+pub mod source;
+
+pub use error::AnalysisError;
+pub use limits::Limits;
