@@ -1,0 +1,19 @@
+[package]
+name = "unsafe-surface-cargo"
+description = "Cargo workspace and target discovery for cargo-unsafe-surface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+camino.workspace = true
+cargo_metadata.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+unsafe-surface-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

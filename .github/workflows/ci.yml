@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to keep CI fast.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+# Action pinning policy: actions that check out code or upload artifacts are
+# pinned to immutable commit hashes. Tooling actions whose behaviour depends
+# on moving tool names (dtolnay/rust-toolchain, swatinem/rust-cache,
+# taiki-e/install-action) are pinned to tags, because no stable per-release
+# hashes are published for the moving inputs; this trade-off is documented
+# here and reviewed by Dependabot. See docs/development.md#ci.
+jobs:
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable # see pinning policy above
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Tests (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # "1.85.0" is the declared MSRV (rust-version in Cargo.toml).
+        toolchain: [stable, "1.85.0"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: cargo doc --workspace --all-features --no-deps
+
+  release-build:
+    name: Release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: cargo build --release --workspace --locked

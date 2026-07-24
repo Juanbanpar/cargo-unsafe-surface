@@ -1,0 +1,27 @@
+[package]
+name = "cargo-unsafe-surface"
+description = "Cargo subcommand that reports the reachable unsafe and foreign-code surface of a Rust program"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "cargo-unsafe-surface"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+unsafe-surface-analysis.workspace = true
+unsafe-surface-cargo.workspace = true
+unsafe-surface-core.workspace = true
+unsafe-surface-report.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true
