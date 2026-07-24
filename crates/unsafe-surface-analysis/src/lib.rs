@@ -19,10 +19,13 @@
 #![warn(missing_docs)]
 
 pub mod cfg_eval;
+pub mod classify;
 pub mod error;
 pub mod index;
+pub mod justify;
 pub mod limits;
 pub mod source;
 
+pub use classify::{classify_crate, CallSite, CalleeRef, CrateAnalysis, FunctionRecord};
 pub use error::AnalysisError;
 pub use limits::Limits;
