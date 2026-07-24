@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cargo-unsafe-surface",
+    "crates/unsafe-surface-analysis",
+    "crates/unsafe-surface-cargo",
+    "crates/unsafe-surface-core",
+    "crates/unsafe-surface-report",
+]
+# Test fixtures are independent Cargo workspaces and must never be built as
+# part of this workspace. They are only parsed as source trees by the CLI
+# integration tests.
+exclude = ["tests/fixtures"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Juanbanpar/cargo-unsafe-surface"
+homepage = "https://github.com/Juanbanpar/cargo-unsafe-surface"
+keywords = ["unsafe", "static-analysis", "security", "audit", "cargo"]
+categories = ["development-tools::cargo-plugins", "parser-implementations"]
+
+[workspace.dependencies]
+# Internal crates.
+unsafe-surface-core = { version = "0.1.0", path = "crates/unsafe-surface-core" }
+unsafe-surface-cargo = { version = "0.1.0", path = "crates/unsafe-surface-cargo" }
+unsafe-surface-analysis = { version = "0.1.0", path = "crates/unsafe-surface-analysis" }
+unsafe-surface-report = { version = "0.1.0", path = "crates/unsafe-surface-report" }
+
+# Shared third-party dependencies. Versions are tracked in Cargo.lock.
+anyhow = "1.0"
+camino = "1.1"
+cargo_metadata = "0.19"
+clap = { version = "4.5", features = ["derive"] }
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+syn = { version = "2.0", default-features = false, features = [
+    "full",
+    "visit",
+    "parsing",
+    "printing",
+] }
+thiserror = "2.0"
+toml = "0.8"
+
+# Development dependencies.
+criterion = "0.5"
+insta = "1.40"
+proptest = "1.5"
+tempfile = "3.10"

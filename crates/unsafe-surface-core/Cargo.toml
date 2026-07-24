@@ -1,0 +1,13 @@
+[package]
+name = "unsafe-surface-core"
+description = "Core analysis model for the cargo-unsafe-surface static analysis tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
