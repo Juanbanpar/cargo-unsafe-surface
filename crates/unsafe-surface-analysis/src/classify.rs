@@ -67,6 +67,8 @@ pub struct CallSite {
 pub struct FunctionRecord {
     /// Module-relative item path (without the crate name).
     pub path: Vec<String>,
+    /// Module containing the item (used to resolve relative paths).
+    pub module: Vec<String>,
     /// What kind of callable this is.
     pub kind: FunctionKind,
     /// Whether the item is `pub`.
@@ -84,6 +86,12 @@ pub struct FunctionRecord {
     pub impl_self_ty: Option<Vec<String>>,
     /// `use` imports declared inside the body.
     pub imports: ModuleImports,
+    /// Names of the function's parameters (used to detect calls through
+    /// function pointers and closure values).
+    pub params: Vec<String>,
+    /// Names of locals explicitly typed as bare function pointers
+    /// (`let f: fn() = ...`).
+    pub fn_pointer_locals: Vec<String>,
 }
 
 /// The classified analysis of one crate.
@@ -224,6 +232,7 @@ fn classify_item(
                     });
                     analysis.functions.push(FunctionRecord {
                         path: joined(&module.path, &name),
+                        module: module.path.clone(),
                         kind: FunctionKind::Extern,
                         is_pub: is_pub(&foreign_fn.vis),
                         is_unsafe_fn: true, // calling a foreign fn is always unsafe
@@ -232,6 +241,8 @@ fn classify_item(
                         calls: Vec::new(),
                         impl_self_ty: None,
                         imports: ModuleImports::default(),
+                        params: Vec::new(),
+                        fn_pointer_locals: Vec::new(),
                     });
                 }
             }
@@ -347,6 +358,7 @@ fn function_record(
     let location = location_of(module, sig.ident.span());
     let mut record = FunctionRecord {
         path,
+        module: module.path.clone(),
         kind,
         is_pub,
         is_unsafe_fn,
@@ -355,6 +367,8 @@ fn function_record(
         calls: Vec::new(),
         impl_self_ty,
         imports: ModuleImports::default(),
+        params: Vec::new(),
+        fn_pointer_locals: Vec::new(),
     };
     if is_unsafe_fn {
         record.ops.push(
@@ -363,6 +377,19 @@ fn function_record(
             ),
         );
     }
+    record.params = sig
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            syn::FnArg::Typed(pat_type) => Some(&pat_type.pat),
+            _ => None,
+        })
+        .flat_map(|pat| {
+            let mut names = Vec::new();
+            collect_pat_idents_vec(pat, &mut names);
+            names
+        })
+        .collect();
     let Some(block) = block else {
         return record;
     };
@@ -559,6 +586,11 @@ impl Visit<'_> for FnBodyVisitor<'_> {
         // `let x: U = ...` is parsed as a typed pattern in syn 2.
         if let syn::Pat::Type(pat_type) = &node.pat {
             self.bind_if_union(&pat_type.pat, &pat_type.ty);
+            if matches!(&*pat_type.ty, syn::Type::BareFn(_)) {
+                let mut names = Vec::new();
+                collect_pat_idents_vec(&pat_type.pat, &mut names);
+                self.record.fn_pointer_locals.extend(names);
+            }
         }
         syn::visit::visit_local(self, node);
     }
@@ -612,6 +644,19 @@ fn flatten_use_tree(tree: &syn::UseTree, prefix: Vec<String>, imports: &mut Modu
                 flatten_use_tree(tree, prefix.clone(), imports);
             }
         }
+    }
+}
+
+fn collect_pat_idents_vec(pat: &syn::Pat, out: &mut Vec<String>) {
+    match pat {
+        syn::Pat::Ident(ident) => out.push(ident.ident.to_string()),
+        syn::Pat::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                collect_pat_idents_vec(elem, out);
+            }
+        }
+        syn::Pat::Reference(reference) => collect_pat_idents_vec(&reference.pat, out),
+        _ => {}
     }
 }
 

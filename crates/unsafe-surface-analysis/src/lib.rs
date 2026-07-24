@@ -21,11 +21,16 @@
 pub mod cfg_eval;
 pub mod classify;
 pub mod error;
+pub mod graph;
+#[cfg(test)]
+mod graph_tests;
 pub mod index;
 pub mod justify;
 pub mod limits;
+pub mod resolve;
 pub mod source;
 
 pub use classify::{classify_crate, CallSite, CalleeRef, CrateAnalysis, FunctionRecord};
 pub use error::AnalysisError;
+pub use graph::{build_call_graph, CallGraph, CrateInput, EdgeMeta, GraphNode, NodeId};
 pub use limits::Limits;
