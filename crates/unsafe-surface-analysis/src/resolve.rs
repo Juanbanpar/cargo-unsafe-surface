@@ -10,7 +10,7 @@
 //!   module-relative, ancestor modules, crate root, glob imports, and
 //!   finally other analysed crates by their first segment. The first
 //!   existing callable item wins — a deliberate approximation of Rust's
-//!     scoping rules that is exact in the overwhelmingly common cases.
+//!   scoping rules that is exact in the overwhelmingly common cases.
 //! * **Method calls** on `self` resolve against the enclosing impl's
 //!   `Self` type. Other method calls use the *unique-name heuristic*: if
 //!   exactly one analysed impl defines a method with that name, the edge
