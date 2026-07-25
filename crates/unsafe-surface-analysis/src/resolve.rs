@@ -5,6 +5,11 @@
 //! indexes of all analysed crates using a documented, deterministic
 //! strategy:
 //!
+//! * **Crate instances**: a package's library and each of its binaries are
+//!   separate compilation units sharing one crate name. The index tracks
+//!   *instances*; `crate::` stays inside the caller's instance, while
+//!   `name::` from a binary resolves to the library instance (extern-crate
+//!   semantics), matching rustc.
 //! * **Path calls** are normalized (`crate`/`self`/`super`/`Self`) and
 //!   probed, in order: caller's `use` imports (body then module level),
 //!   module-relative, ancestor modules, crate root, glob imports, and
@@ -14,75 +19,111 @@
 //! * **Method calls** on `self` resolve against the enclosing impl's
 //!   `Self` type. Other method calls use the *unique-name heuristic*: if
 //!   exactly one analysed impl defines a method with that name, the edge
-//!   is added with [`EdgeKind::InferredMethod`]; with several candidates
-//!   the call is reported as ambiguous; with none, as unknown.
+//!   is added with `EdgeKind::InferredMethod`; with several candidates the
+//!   call is reported as ambiguous; with none, as unknown.
 //!
-//! Everything that does not resolve is an explicit [`UnresolvedCall`] with
-//! a machine-readable reason — unresolved calls are part of the analysis
-//! uncertainty and are never silently treated as safe.
+//! Everything that does not resolve is an explicit
+//! [`unsafe_surface_core::UnresolvedCall`] with a machine-readable
+//! reason — unresolved calls are part of the analysis uncertainty and are
+//! never silently treated as safe.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use unsafe_surface_core::{ItemPath, UnresolvedReason};
 
 use crate::classify::FunctionRecord;
 use crate::index::{CrateIndex, IndexItemKind};
 
-/// The merged symbol universe across all analysed crates.
+/// Identifier of a crate instance (library or binary compilation unit).
+pub type InstanceId = usize;
+
+/// One crate instance in the analysis universe.
+pub struct Instance<'a> {
+    /// Crate name (source-level, `-` normalized to `_`).
+    pub crate_name: String,
+    /// Whether this instance is the package's library target.
+    pub is_lib: bool,
+    /// The instance's symbol index.
+    pub index: &'a CrateIndex,
+}
+
+/// The merged symbol universe across all analysed crate instances.
 pub struct GlobalIndex<'a> {
-    /// Crate name → (symbol index, package).
-    crates: BTreeMap<&'a str, &'a CrateIndex>,
-    /// Method name → all known method item paths as `(crate, path)`.
-    method_index: BTreeMap<&'a str, Vec<(&'a str, &'a [String])>>,
+    /// All instances.
+    instances: Vec<Instance<'a>>,
+    /// Crate name → instance ids, library instances first.
+    by_name: BTreeMap<String, Vec<InstanceId>>,
+    /// Method name → all known method item paths as `(instance, path)`.
+    method_index: BTreeMap<String, Vec<(InstanceId, &'a [String])>>,
     /// Dependency crates whose sources were not analysed.
-    unavailable_crates: std::collections::BTreeSet<&'a str>,
+    unavailable_crates: BTreeSet<String>,
 }
 
 impl<'a> GlobalIndex<'a> {
-    /// Builds the merged index from per-crate symbol indexes.
+    /// Builds the merged index from per-instance symbol indexes.
     #[must_use]
-    pub fn new(
-        crates: &[(&'a str, &'a CrateIndex)],
-        unavailable_crates: std::collections::BTreeSet<&'a str>,
-    ) -> Self {
-        let mut index = GlobalIndex {
-            crates: BTreeMap::new(),
-            method_index: BTreeMap::new(),
-            unavailable_crates,
-        };
-        for (name, crate_index) in crates {
-            index.crates.insert(name, crate_index);
-            for (method, paths) in &crate_index.method_index {
-                index
-                    .method_index
-                    .entry(method.as_str())
+    pub fn new(instances: Vec<Instance<'a>>, unavailable_crates: BTreeSet<String>) -> Self {
+        let mut by_name: BTreeMap<String, Vec<InstanceId>> = BTreeMap::new();
+        // Library instances are probed first for cross-crate paths:
+        // binaries of other packages are never linkable.
+        let mut order: Vec<InstanceId> = (0..instances.len()).collect();
+        order.sort_by_key(|&id| !instances[id].is_lib);
+        for id in order {
+            by_name
+                .entry(instances[id].crate_name.clone())
+                .or_default()
+                .push(id);
+        }
+        let mut method_index: BTreeMap<String, Vec<(InstanceId, &[String])>> = BTreeMap::new();
+        for (id, instance) in instances.iter().enumerate() {
+            for (method, paths) in &instance.index.method_index {
+                method_index
+                    .entry(method.clone())
                     .or_default()
-                    .extend(paths.iter().map(|p| (*name, p.as_slice())));
+                    .extend(paths.iter().map(|p| (id, p.as_slice())));
             }
         }
-        index
+        GlobalIndex {
+            instances,
+            by_name,
+            method_index,
+            unavailable_crates,
+        }
     }
 
-    /// Whether a crate with this (source-level) name was analysed.
+    /// The instance's own symbol index.
+    #[must_use]
+    pub fn instance_index(&self, instance: InstanceId) -> &'a CrateIndex {
+        self.instances[instance].index
+    }
+
+    /// The crate name of an instance.
+    #[must_use]
+    pub fn instance_name(&self, instance: InstanceId) -> &str {
+        &self.instances[instance].crate_name
+    }
+
+    /// Whether a crate with this name was analysed.
     #[must_use]
     pub fn has_crate(&self, name: &str) -> bool {
-        self.crates.contains_key(name)
+        self.by_name.contains_key(name)
     }
 
-    /// The kind of an item, if it exists.
+    /// The kind of an item inside one instance.
     #[must_use]
-    pub fn item_kind(&self, krate: &str, path: &[String]) -> Option<IndexItemKind> {
-        self.crates
-            .get(krate)
-            .and_then(|index| index.items.get(path))
+    pub fn item_kind(&self, instance: InstanceId, path: &[String]) -> Option<IndexItemKind> {
+        self.instances[instance]
+            .index
+            .items
+            .get(path)
             .map(|item| item.kind)
     }
 
     /// Whether the item is callable (a graph node target).
     #[must_use]
-    pub fn is_callable(&self, krate: &str, path: &[String]) -> bool {
+    pub fn is_callable(&self, instance: InstanceId, path: &[String]) -> bool {
         matches!(
-            self.item_kind(krate, path),
+            self.item_kind(instance, path),
             Some(
                 IndexItemKind::Fn { .. }
                     | IndexItemKind::Method { .. }
@@ -94,7 +135,7 @@ impl<'a> GlobalIndex<'a> {
 
     /// All known methods with a given name.
     #[must_use]
-    pub fn methods_named(&self, name: &str) -> &[(&'a str, &'a [String])] {
+    pub fn methods_named(&self, name: &str) -> &[(InstanceId, &'a [String])] {
         self.method_index
             .get(name)
             .map(Vec::as_slice)
@@ -104,30 +145,53 @@ impl<'a> GlobalIndex<'a> {
     /// Methods of impl blocks whose `Self` type is `self_ty` (matched by
     /// last segment, the common case).
     #[must_use]
-    pub fn methods_of_type(&self, self_ty: &[String], name: &str) -> Vec<(&'a str, Vec<String>)> {
+    pub fn methods_of_type(
+        &self,
+        self_ty: &[String],
+        name: &str,
+    ) -> Vec<(InstanceId, Vec<String>)> {
         let mut found = Vec::new();
         let Some(last) = self_ty.last() else {
             return found;
         };
-        for (krate, index) in &self.crates {
-            for impl_record in &index.impls {
+        for (id, instance) in self.instances.iter().enumerate() {
+            for impl_record in &instance.index.impls {
                 if impl_record.self_ty.last() != Some(last) {
                     continue;
                 }
                 if let Some(path) = impl_record.methods.get(name) {
-                    found.push((*krate, path.clone()));
+                    found.push((id, path.clone()));
                 }
             }
         }
         found
+    }
+
+    /// Instances to probe for a path whose first segment is `name`,
+    /// called from `caller`: the caller's own instance when it has that
+    /// name (handles `crate-name::` inside its own crate) plus library
+    /// instances of that name (extern-crate semantics).
+    fn probe_instances(&self, caller: InstanceId, name: &str) -> Vec<InstanceId> {
+        let mut probes = Vec::new();
+        if self.instances[caller].crate_name == name {
+            probes.push(caller);
+        }
+        if let Some(ids) = self.by_name.get(name) {
+            for &id in ids {
+                if id != caller && self.instances[id].is_lib {
+                    probes.push(id);
+                }
+            }
+        }
+        probes
     }
 }
 
 /// The resolution of one call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
-    /// Resolved to a callable item.
-    Callable(ItemPath),
+    /// Resolved to a callable item `(instance, item path)`.
+    Callable(InstanceId, ItemPath),
     /// Resolved to a known non-callable item (tuple-struct constructor,
     /// static, …): neither an edge nor an unresolved call.
     NotCallable,
@@ -135,49 +199,39 @@ pub enum Resolution {
     Unresolved(UnresolvedReason),
 }
 
-/// Resolves a path call.
+/// Resolves a path call from `caller` (in `caller_instance`).
 #[must_use]
 pub fn resolve_path_call(
     global: &GlobalIndex<'_>,
     caller: &FunctionRecord,
-    caller_crate: &str,
+    caller_instance: InstanceId,
     segments: &[String],
 ) -> Resolution {
     if segments.is_empty() {
         return Resolution::Unresolved(UnresolvedReason::UnknownName);
     }
-    let Some(caller_index) = global.crates.get(caller_crate).copied() else {
-        return Resolution::Unresolved(UnresolvedReason::UnknownName);
-    };
+    let caller_index = global.instance_index(caller_instance);
 
-    // Normalize leading keywords into absolute crate-relative paths.
-    let normalized: Option<(String, Vec<String>)> = match segments[0].as_str() {
-        "crate" => Some((caller_crate.to_owned(), segments[1..].to_vec())),
-        "self" => Some((
-            caller_crate.to_owned(),
-            [caller.module.as_slice(), &segments[1..]].concat(),
-        )),
+    // Normalize leading keywords into instance-relative paths.
+    let normalized: Option<Vec<String>> = match segments[0].as_str() {
+        "crate" => Some(segments[1..].to_vec()),
+        "self" => Some([caller.module.as_slice(), &segments[1..]].concat()),
         "super" => {
             let ups = segments
                 .iter()
                 .take_while(|s| s.as_str() == "super")
                 .count();
             let base_len = caller.module.len().saturating_sub(ups);
-            Some((
-                caller_crate.to_owned(),
-                [&caller.module[..base_len], &segments[ups..]].concat(),
-            ))
+            Some([&caller.module[..base_len], &segments[ups..]].concat())
         }
-        "Self" => caller.impl_self_ty.as_ref().map(|self_ty| {
-            (
-                caller_crate.to_owned(),
-                [caller.module.as_slice(), self_ty.as_slice(), &segments[1..]].concat(),
-            )
-        }),
+        "Self" => caller
+            .impl_self_ty
+            .as_ref()
+            .map(|self_ty| [caller.module.as_slice(), self_ty.as_slice(), &segments[1..]].concat()),
         _ => None,
     };
-    if let Some((krate, path)) = normalized {
-        return classify_candidate(global, &krate, &path);
+    if let Some(path) = normalized {
+        return classify_candidate(global, caller_instance, &path);
     }
 
     // Candidate probing order (see module docs).
@@ -189,7 +243,9 @@ pub fn resolve_path_call(
     let import_sets = [Some(&caller.imports), module_imports];
     for imports in import_sets.into_iter().flatten() {
         if let Some(target) = imports.exact.get(first) {
-            if let Some(resolution) = resolve_imported(global, caller_crate, target, rest) {
+            if let Some(resolution) =
+                resolve_imported(global, caller, caller_instance, target, rest)
+            {
                 return resolution;
             }
         }
@@ -198,7 +254,7 @@ pub fn resolve_path_call(
     // 2. Module-relative and ancestor-module-relative paths.
     for depth in (0..=caller.module.len()).rev() {
         let candidate = [&caller.module[..depth], segments].concat();
-        if let Some(resolution) = existing_callable(global, caller_crate, &candidate) {
+        if let Some(resolution) = existing_callable(global, caller_instance, &candidate) {
             return resolution;
         }
     }
@@ -208,10 +264,10 @@ pub fn resolve_path_call(
         for glob in &imports.globs {
             if let Some(base) = normalize_import_target(&caller.module, glob) {
                 let candidate = [base.as_slice(), segments].concat();
-                if let Some(resolution) = existing_callable(global, caller_crate, &candidate) {
+                if let Some(resolution) = existing_callable(global, caller_instance, &candidate) {
                     return resolution;
                 }
-                if let Some(resolution) = cross_crate_callable(global, &candidate) {
+                if let Some(resolution) = probe_by_name(global, caller_instance, &candidate) {
                     return resolution;
                 }
             }
@@ -219,7 +275,7 @@ pub fn resolve_path_call(
     }
 
     // 4. Cross-crate: first segment names an analysed crate.
-    if let Some(resolution) = cross_crate_callable(global, segments) {
+    if let Some(resolution) = probe_by_name(global, caller_instance, segments) {
         return resolution;
     }
 
@@ -245,10 +301,141 @@ pub fn resolve_path_call(
     Resolution::Unresolved(UnresolvedReason::UnknownName)
 }
 
+/// Resolves a method call from `caller`.
+#[must_use]
+pub fn resolve_method_call(
+    global: &GlobalIndex<'_>,
+    caller: &FunctionRecord,
+    name: &str,
+    receiver_is_self: bool,
+) -> Resolution {
+    // `self.method()` with a known `Self` type: search impls of that type.
+    if receiver_is_self {
+        if let Some(self_ty) = &caller.impl_self_ty {
+            let found = global.methods_of_type(self_ty, name);
+            match found.len() {
+                1 => {
+                    let (instance, path) = &found[0];
+                    return Resolution::Callable(
+                        *instance,
+                        ItemPath::new(global.instance_name(*instance), path.clone()),
+                    );
+                }
+                n if n > 1 => {
+                    return Resolution::Unresolved(UnresolvedReason::AmbiguousMethod {
+                        candidates: n,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Unique-name heuristic across all analysed instances.
+    let candidates = global.methods_named(name);
+    match candidates.len() {
+        1 => {
+            let (instance, path) = &candidates[0];
+            Resolution::Callable(
+                *instance,
+                ItemPath::new(global.instance_name(*instance), (*path).to_vec()),
+            )
+        }
+        0 => Resolution::Unresolved(UnresolvedReason::UnknownName),
+        n => Resolution::Unresolved(UnresolvedReason::AmbiguousMethod { candidates: n }),
+    }
+}
+
+/// Resolves an imported first segment plus the remaining call path.
+fn resolve_imported(
+    global: &GlobalIndex<'_>,
+    caller: &FunctionRecord,
+    caller_instance: InstanceId,
+    target: &[String],
+    rest: &[String],
+) -> Option<Resolution> {
+    // Imports rooted at `crate`/`self`/`super` stay in the instance;
+    // everything else is tried in the instance and then as a crate name.
+    match target.first()?.as_str() {
+        "crate" => {
+            let candidate = [&target[1..], rest].concat();
+            existing_callable(global, caller_instance, &candidate)
+        }
+        "self" | "super" => {
+            let base = normalize_import_target(&caller.module, target)?;
+            let candidate = [base.as_slice(), rest].concat();
+            existing_callable(global, caller_instance, &candidate)
+        }
+        _ => {
+            let candidate = [target, rest].concat();
+            existing_callable(global, caller_instance, &candidate)
+                .or_else(|| probe_by_name(global, caller_instance, &candidate))
+        }
+    }
+}
+
+/// Normalizes an import target starting with `self`/`super` relative to
+/// `module`.
+fn normalize_import_target(module: &[String], target: &[String]) -> Option<Vec<String>> {
+    match target.first()?.as_str() {
+        "self" => Some([module, &target[1..]].concat()),
+        "super" => {
+            let ups = target.iter().take_while(|s| s.as_str() == "super").count();
+            let base_len = module.len().saturating_sub(ups);
+            Some([&module[..base_len], &target[ups..]].concat())
+        }
+        _ => Some(target.to_vec()),
+    }
+}
+
+/// Returns the resolution when `path` exists as an item in `instance`.
+fn existing_callable(
+    global: &GlobalIndex<'_>,
+    instance: InstanceId,
+    path: &[String],
+) -> Option<Resolution> {
+    if global.is_callable(instance, path) {
+        return Some(Resolution::Callable(
+            instance,
+            ItemPath::new(global.instance_name(instance), path.to_vec()),
+        ));
+    }
+    if global.item_kind(instance, path).is_some() {
+        return Some(Resolution::NotCallable);
+    }
+    None
+}
+
+/// Returns the resolution when the path's first segment names an analysed
+/// crate and the remainder names an item in one of its probe instances.
+fn probe_by_name(
+    global: &GlobalIndex<'_>,
+    caller_instance: InstanceId,
+    segments: &[String],
+) -> Option<Resolution> {
+    let (first, rest) = segments.split_first()?;
+    for instance in global.probe_instances(caller_instance, first) {
+        if let Some(resolution) = existing_callable(global, instance, rest) {
+            return Some(resolution);
+        }
+    }
+    None
+}
+
+/// Classifies a normalized instance-relative path.
+fn classify_candidate(
+    global: &GlobalIndex<'_>,
+    instance: InstanceId,
+    path: &[String],
+) -> Resolution {
+    existing_callable(global, instance, path)
+        .unwrap_or(Resolution::Unresolved(UnresolvedReason::UnknownName))
+}
+
 /// Rust prelude items (edition 2021). Calls through them are classified
 /// as standard-library calls instead of unknown names, keeping the
 /// unresolved-call list meaningful. Types that require an explicit `use`
-/// (Rc, Arc, Cell, …) are deliberately absent: they resolve through
+/// (`Rc`, `Arc`, `Cell`, …) are deliberately absent: they resolve through
 /// imports.
 const STD_PRELUDE: &[&str] = &[
     "AsMut",
@@ -293,108 +480,3 @@ const STD_PRELUDE: &[&str] = &[
     "Unpin",
     "Vec",
 ];
-
-/// Resolves a method call.
-#[must_use]
-pub fn resolve_method_call(
-    global: &GlobalIndex<'_>,
-    caller: &FunctionRecord,
-    name: &str,
-    receiver_is_self: bool,
-) -> Resolution {
-    // `self.method()` with a known `Self` type: search impls of that type.
-    if receiver_is_self {
-        if let Some(self_ty) = &caller.impl_self_ty {
-            let found = global.methods_of_type(self_ty, name);
-            match found.len() {
-                1 => {
-                    let (krate, path) = &found[0];
-                    return Resolution::Callable(ItemPath::new((*krate).to_owned(), path.clone()));
-                }
-                n if n > 1 => {
-                    return Resolution::Unresolved(UnresolvedReason::AmbiguousMethod {
-                        candidates: n,
-                    });
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Unique-name heuristic across all analysed crates.
-    let candidates = global.methods_named(name);
-    match candidates.len() {
-        1 => {
-            let (krate, path) = &candidates[0];
-            Resolution::Callable(ItemPath::new((*krate).to_owned(), (*path).to_vec()))
-        }
-        0 => Resolution::Unresolved(UnresolvedReason::UnknownName),
-        n => Resolution::Unresolved(UnresolvedReason::AmbiguousMethod { candidates: n }),
-    }
-}
-
-/// Resolves an imported first segment plus the remaining call path.
-fn resolve_imported(
-    global: &GlobalIndex<'_>,
-    caller_crate: &str,
-    target: &[String],
-    rest: &[String],
-) -> Option<Resolution> {
-    let base = normalize_import_target(&[], target)?;
-    let candidate = [base.as_slice(), rest].concat();
-    if let Some(resolution) = existing_callable(global, caller_crate, &candidate) {
-        return Some(resolution);
-    }
-    // The import may name an extern crate (`use dep_crate::thing`).
-    cross_crate_callable(global, &candidate)
-}
-
-/// Normalizes an import target starting with `crate`/`self`/`super`.
-///
-/// `module` is the module containing the import (only needed for
-/// `self`/`super`; callers pass the real module when known).
-fn normalize_import_target(module: &[String], target: &[String]) -> Option<Vec<String>> {
-    match target.first()?.as_str() {
-        "crate" => Some(target[1..].to_vec()),
-        "self" => Some([module, &target[1..]].concat()),
-        "super" => {
-            let ups = target.iter().take_while(|s| s.as_str() == "super").count();
-            let base_len = module.len().saturating_sub(ups);
-            Some([&module[..base_len], &target[ups..]].concat())
-        }
-        _ => Some(target.to_vec()),
-    }
-}
-
-/// Returns the resolution when `path` exists as a callable in `krate`.
-fn existing_callable(global: &GlobalIndex<'_>, krate: &str, path: &[String]) -> Option<Resolution> {
-    if global.is_callable(krate, path) {
-        return Some(Resolution::Callable(ItemPath::new(krate, path.to_vec())));
-    }
-    if global.item_kind(krate, path).is_some() {
-        return Some(Resolution::NotCallable);
-    }
-    None
-}
-
-/// Returns the resolution when the path's first segment is an analysed
-/// crate and the remainder names an item in it.
-fn cross_crate_callable(global: &GlobalIndex<'_>, segments: &[String]) -> Option<Resolution> {
-    let (first, rest) = segments.split_first()?;
-    if !global.has_crate(first) {
-        return None;
-    }
-    if global.is_callable(first, rest) {
-        return Some(Resolution::Callable(ItemPath::new(first, rest.to_vec())));
-    }
-    if global.item_kind(first, rest).is_some() {
-        return Some(Resolution::NotCallable);
-    }
-    None
-}
-
-/// Classifies a normalized absolute path.
-fn classify_candidate(global: &GlobalIndex<'_>, krate: &str, path: &[String]) -> Resolution {
-    existing_callable(global, krate, path)
-        .unwrap_or(Resolution::Unresolved(UnresolvedReason::UnknownName))
-}
