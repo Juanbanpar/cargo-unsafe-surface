@@ -138,8 +138,16 @@ pub struct CrateInput<'a> {
 }
 
 /// Builds the call graph over all analysed crate instances.
+///
+/// `unavailable_crates` are dependency crates known to Cargo but not
+/// analysed; calls into them are reported with
+/// [`UnresolvedReason::DependencySourceUnavailable`].
 #[must_use]
-pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph {
+pub fn build_call_graph(
+    inputs: &[CrateInput<'_>],
+    limits: &Limits,
+    unavailable_crates: BTreeSet<String>,
+) -> CallGraph {
     let mut graph = CallGraph::default();
 
     // Pass 1: register instances and create nodes.
@@ -189,7 +197,7 @@ pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph
                 index: input.index,
             })
             .collect(),
-        unavailable_crates(inputs),
+        unavailable_crates,
     );
 
     // Pass 2: resolve call sites into edges (and attach call ops).
@@ -206,7 +214,14 @@ pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph
                     CalleeRef::Method {
                         name,
                         receiver_is_self,
-                    } => resolve_method_call(&global, record, name, *receiver_is_self),
+                        receiver_local,
+                    } => resolve_method_call(
+                        &global,
+                        record,
+                        name,
+                        *receiver_is_self,
+                        receiver_local.as_deref(),
+                    ),
                 };
                 match resolution {
                     Resolution::Callable(callee_instance, target) => {
@@ -266,16 +281,6 @@ pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph
     }
 
     graph
-}
-
-/// Dependency crates that appear in sources but were not analysed.
-fn unavailable_crates(inputs: &[CrateInput<'_>]) -> BTreeSet<String> {
-    // With the current pipeline every discovered package is parsed, so the
-    // set is empty; the hook exists for the dependency-analysis mode where
-    // registry sources may be missing. Kept as a function so the wiring is
-    // covered by tests.
-    let _ = inputs;
-    BTreeSet::new()
 }
 
 /// Attaches resolution-dependent unsafe operations to the caller node.

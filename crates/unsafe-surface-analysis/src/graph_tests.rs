@@ -168,7 +168,7 @@ pub unsafe fn raw_entry() {
             analysis: &app.analysis,
         },
     ];
-    let graph = build_call_graph(&inputs, &Limits::default());
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
     (graph, dir)
 }
 
@@ -308,10 +308,41 @@ pub fn f(a: A) { a.collide(); }
         index: &solo.index,
         analysis: &solo.analysis,
     }];
-    let graph = build_call_graph(&inputs, &Limits::default());
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
     assert_eq!(
         unresolved_reasons(&graph, "<receiver>.collide"),
         vec![UnresolvedReason::AmbiguousMethod { candidates: 2 }]
+    );
+}
+
+#[test]
+fn dyn_trait_receivers_are_dynamic_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "solo",
+        &[(
+            "lib.rs",
+            r#"
+pub trait Job { fn work(&self); }
+pub struct W;
+impl Job for W { fn work(&self) {} }
+pub fn run(job: &dyn Job) { job.work(); }
+"#,
+        )],
+    );
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    assert_eq!(
+        unresolved_reasons(&graph, "<receiver>.work"),
+        vec![UnresolvedReason::DynamicDispatch]
     );
 }
 
@@ -342,7 +373,7 @@ impl W {
         index: &solo.index,
         analysis: &solo.analysis,
     }];
-    let graph = build_call_graph(&inputs, &Limits::default());
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
     let callees = callee_paths(&graph, "solo::W::run");
     assert_eq!(callees, vec!["solo::W::step".to_owned()]);
     let run_id = graph
@@ -405,7 +436,7 @@ fn node_limit_truncation_is_diagnosed() {
         max_graph_nodes: 2,
         ..Limits::default()
     };
-    let graph = build_call_graph(&inputs, &limits);
+    let graph = build_call_graph(&inputs, &limits, Default::default());
     assert_eq!(graph.nodes.len(), 2);
     assert!(graph
         .diagnostics
@@ -438,7 +469,7 @@ pub fn f() {
         index: &solo.index,
         analysis: &solo.analysis,
     }];
-    let graph = build_call_graph(&inputs, &Limits::default());
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
     let f_id = graph.node(&ItemPath::parse("solo::f").unwrap()).unwrap();
     let call_op = graph.nodes[f_id as usize]
         .ops

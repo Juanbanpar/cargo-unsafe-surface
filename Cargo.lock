@@ -131,6 +131,7 @@ dependencies = [
  "anyhow",
  "clap",
  "insta",
+ "serde",
  "serde_json",
  "tempfile",
  "toml",

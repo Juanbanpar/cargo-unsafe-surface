@@ -99,6 +99,11 @@ pub struct DiscoveredWorkspace {
     /// Non-fatal discovery issues (e.g. the resolve graph was unavailable
     /// and features were approximated).
     pub warnings: Vec<String>,
+    /// Crate names (source-level, `-` normalized to `_`) of every package
+    /// Cargo knows about, including dependencies that are not analysed.
+    /// Lets the analysis report calls into unanalysed dependencies with a
+    /// precise reason instead of "unknown name".
+    pub all_dependency_crate_names: std::collections::BTreeSet<String>,
 }
 
 impl DiscoveredWorkspace {
@@ -289,11 +294,18 @@ pub fn discover(
         .map(|p| core_package_id(p, &workspace_members))
         .collect();
 
+    let all_dependency_crate_names = metadata
+        .packages
+        .iter()
+        .map(|p| p.name.replace('-', "_"))
+        .collect();
+
     Ok(DiscoveredWorkspace {
         workspace_root: metadata.workspace_root.clone(),
         packages,
         selected: selected_ids,
         warnings,
+        all_dependency_crate_names,
     })
 }
 
