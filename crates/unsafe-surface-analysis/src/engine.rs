@@ -174,7 +174,14 @@ pub fn analyze(
             analysis: &bundle.analysis,
         })
         .collect();
-    let graph = build_call_graph(&inputs, &config.limits);
+    let analysed_names: std::collections::BTreeSet<String> =
+        bundles.iter().map(|b| b.package.crate_name()).collect();
+    let unavailable: std::collections::BTreeSet<String> = workspace
+        .all_dependency_crate_names
+        .difference(&analysed_names)
+        .cloned()
+        .collect();
+    let graph = build_call_graph(&inputs, &config.limits, unavailable);
     diagnostics.extend(graph.diagnostics.iter().cloned());
 
     // 3. Resolve entry points.

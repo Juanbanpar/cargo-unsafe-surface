@@ -1,0 +1,62 @@
+---
+source: crates/unsafe-surface-report/tests/text_report.rs
+expression: text
+---
+Unsafe Surface Report
+
+Tool: cargo-unsafe-surface 0.1.0
+Schema version: 1
+
+Entry points:
+  server::main
+
+Summary:
+  Reachable unsafe operations: 2
+  Reachable unsafe functions:  0
+  Reachable FFI calls:         1
+  Manual Send/Sync impls:      1
+  Inline assembly sites:       0
+  Transmutes:                  0
+  Raw pointer dereferences:    0
+  Unreachable unsafe ops:      1
+  Unresolved calls:            1
+
+Findings (reachable): 2
+
+Finding 1
+  Kind:          unsafe block
+  Confidence:    confirmed
+  Justification: absent
+  Location:      server/src/main.rs:4:5
+  Package:       server 0.1.0 (workspace)
+  Enclosing:     server::main
+  Path:
+    server::main
+
+Finding 2
+  Kind:          FFI call
+  Confidence:    confirmed
+  Justification: present
+  Location:      ffiwrap/src/lib.rs:10:18
+  Package:       ffiwrap 0.3.0 (workspace)
+  Target:        ffiwrap::socket
+  Enclosing:     ffiwrap::create_socket
+  Path:
+    server::main
+    -> ffiwrap::create_socket  (server/src/main.rs:3)
+    -> ffiwrap::socket
+
+Unreachable unsafe operations: 1
+  ffiwrap::never_called — FFI call (ffiwrap/src/lib.rs:14:18) — ffiwrap::socket
+
+Structural findings: 1
+  [manual Send implementation] netlib 0.2.0 — unsafe impl Send for Handle (netlib/src/lib.rs:3:1) — justification: present
+
+Unresolved calls: 1 (listed: 1)
+  server::ghost_call -> does_not_exist (server/src/main.rs:7:5) — unknown name
+
+Diagnostics: 1
+  [warning] something is incomplete
+
+Analysis limitations:
+  - approximate call graph

@@ -1,0 +1,7 @@
+[package]
+name = "netlib"
+version = "0.2.0"
+edition = "2021"
+
+[features]
+tls = []

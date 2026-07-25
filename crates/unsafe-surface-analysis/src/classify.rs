@@ -50,6 +50,9 @@ pub enum CalleeRef {
         name: String,
         /// Whether the receiver is literally `self`.
         receiver_is_self: bool,
+        /// The receiver's local variable name, when it is a plain
+        /// identifier (`x.method()`).
+        receiver_local: Option<String>,
     },
 }
 
@@ -92,6 +95,9 @@ pub struct FunctionRecord {
     /// Names of locals explicitly typed as bare function pointers
     /// (`let f: fn() = ...`).
     pub fn_pointer_locals: Vec<String>,
+    /// Names of parameters typed as trait objects (`&dyn Trait`), whose
+    /// method calls are dynamic dispatch.
+    pub dyn_params: Vec<String>,
 }
 
 /// The classified analysis of one crate.
@@ -243,6 +249,7 @@ fn classify_item(
                         imports: ModuleImports::default(),
                         params: Vec::new(),
                         fn_pointer_locals: Vec::new(),
+                        dyn_params: Vec::new(),
                     });
                 }
             }
@@ -369,6 +376,7 @@ fn function_record(
         imports: ModuleImports::default(),
         params: Vec::new(),
         fn_pointer_locals: Vec::new(),
+        dyn_params: Vec::new(),
     };
     if is_unsafe_fn {
         record.ops.push(
@@ -382,6 +390,19 @@ fn function_record(
         .iter()
         .filter_map(|input| match input {
             syn::FnArg::Typed(pat_type) => Some(&pat_type.pat),
+            _ => None,
+        })
+        .flat_map(|pat| {
+            let mut names = Vec::new();
+            collect_pat_idents_vec(pat, &mut names);
+            names
+        })
+        .collect();
+    record.dyn_params = sig
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            syn::FnArg::Typed(pat_type) if is_trait_object(&pat_type.ty) => Some(&pat_type.pat),
             _ => None,
         })
         .flat_map(|pat| {
@@ -503,10 +524,15 @@ impl Visit<'_> for FnBodyVisitor<'_> {
             &*node.receiver,
             Expr::Path(p) if p.path.is_ident("self")
         );
+        let receiver_local = match &*node.receiver {
+            Expr::Path(p) => p.path.get_ident().map(|i| i.to_string()),
+            _ => None,
+        };
         self.record.calls.push(CallSite {
             callee: CalleeRef::Method {
                 name,
                 receiver_is_self,
+                receiver_local,
             },
             location: location_of(self.module, node.method.span()),
         });
@@ -644,6 +670,17 @@ fn flatten_use_tree(tree: &syn::UseTree, prefix: Vec<String>, imports: &mut Modu
                 flatten_use_tree(tree, prefix.clone(), imports);
             }
         }
+    }
+}
+
+/// Whether a type is (possibly behind references/parens) a trait object.
+fn is_trait_object(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::TraitObject(_) => true,
+        syn::Type::Reference(reference) => is_trait_object(&reference.elem),
+        syn::Type::Paren(paren) => is_trait_object(&paren.elem),
+        syn::Type::Group(group) => is_trait_object(&group.elem),
+        _ => false,
     }
 }
 
@@ -983,7 +1020,7 @@ mod tests {
             matches!(&f.calls[1].callee, CalleeRef::Path { segments } if segments == &["String", "new"])
         );
         assert!(
-            matches!(&f.calls[2].callee, CalleeRef::Method { name, receiver_is_self: false } if name == "len")
+            matches!(&f.calls[2].callee, CalleeRef::Method { name, receiver_is_self: false, .. } if name == "len")
         );
         assert!(
             matches!(&f.calls[3].callee, CalleeRef::Path { segments } if segments == &["self_method_receiver"])
@@ -995,7 +1032,7 @@ mod tests {
 
         let m = function(&analysis, "m");
         assert!(
-            matches!(&m.calls[0].callee, CalleeRef::Method { name, receiver_is_self: true } if name == "helper")
+            matches!(&m.calls[0].callee, CalleeRef::Method { name, receiver_is_self: true, .. } if name == "helper")
         );
         assert!(
             matches!(&m.calls[1].callee, CalleeRef::Path { segments } if segments == &["Self", "other"])

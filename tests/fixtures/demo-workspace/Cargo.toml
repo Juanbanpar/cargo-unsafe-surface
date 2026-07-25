@@ -1,0 +1,7 @@
+# Fixture workspace for integration tests. This is an INDEPENDENT
+# workspace (excluded from the unsafe-surface workspace); it is only ever
+# parsed as source trees, never built by the test suite. `broken`
+# intentionally contains a syntax error to exercise diagnostics.
+[workspace]
+resolver = "2"
+members = ["server", "netlib", "ffiwrap", "broken"]

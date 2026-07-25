@@ -308,7 +308,15 @@ pub fn resolve_method_call(
     caller: &FunctionRecord,
     name: &str,
     receiver_is_self: bool,
+    receiver_local: Option<&str>,
 ) -> Resolution {
+    // Method calls on trait-object parameters are dynamic dispatch: the
+    // concrete target is only known at the call site.
+    if let Some(local) = receiver_local {
+        if caller.dyn_params.iter().any(|p| p == local) {
+            return Resolution::Unresolved(UnresolvedReason::DynamicDispatch);
+        }
+    }
     // `self.method()` with a known `Self` type: search impls of that type.
     if receiver_is_self {
         if let Some(self_ty) = &caller.impl_self_ty {
