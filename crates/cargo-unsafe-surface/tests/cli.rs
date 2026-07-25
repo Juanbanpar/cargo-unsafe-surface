@@ -93,7 +93,11 @@ fn include_dependencies_reports_ffi_paths_and_unreachable() {
 #[test]
 fn json_output_matches_schema() {
     let mut args = base_args();
-    args.extend(["--include-dependencies".into(), "--format".into(), "json".into()]);
+    args.extend([
+        "--include-dependencies".into(),
+        "--format".into(),
+        "json".into(),
+    ]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let (code, stdout, stderr) = run(&args);
     assert_eq!(code, 0, "stderr: {stderr}");
@@ -110,8 +114,9 @@ fn json_output_matches_schema() {
     let ffi = report
         .findings
         .iter()
-        .find(|f| f.operation.kind == UnsafeOpKind::FfiCall
-            && f.reachability == Reachability::Reachable)
+        .find(|f| {
+            f.operation.kind == UnsafeOpKind::FfiCall && f.reachability == Reachability::Reachable
+        })
         .expect("no reachable FFI finding");
     let path = ffi.path.as_ref().unwrap();
     assert_eq!(path[0].item.to_string(), "server::main");
@@ -262,7 +267,11 @@ fn output_file_is_written() {
 #[test]
 fn output_is_deterministic_across_runs() {
     let mut args = base_args();
-    args.extend(["--include-dependencies".into(), "--format".into(), "json".into()]);
+    args.extend([
+        "--include-dependencies".into(),
+        "--format".into(),
+        "json".into(),
+    ]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let (code_a, stdout_a, _) = run(&args);
     let (code_b, stdout_b, _) = run(&args);

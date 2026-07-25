@@ -36,7 +36,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCodes> {
     let format = OutputFormat::parse(&cli.format)
         .with_context(|| format!("unknown format `{}`", cli.format))
-        .context("supported formats: text, json")?;
+        .context("supported formats: text, json, sarif")?;
 
     let discovery_options = DiscoveryOptions {
         manifest_path: cli.manifest_path.clone(),

@@ -85,7 +85,7 @@ pub struct Cli {
     #[arg(long)]
     pub exclude_dev_dependencies: bool,
 
-    /// Output format: text or json.
+    /// Output format: text, json or sarif.
     #[arg(long, value_name = "FORMAT", default_value = "text")]
     pub format: String,
 

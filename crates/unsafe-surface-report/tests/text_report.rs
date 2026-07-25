@@ -177,6 +177,40 @@ fn text_output_is_deterministic() {
 }
 
 #[test]
+fn sarif_output_is_valid_2_1_0() {
+    let sarif = render(&sample_report(), OutputFormat::Sarif).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&sarif).unwrap();
+    assert_eq!(value["version"], "2.1.0");
+    let run = &value["runs"][0];
+    assert_eq!(run["tool"]["driver"]["name"], "cargo-unsafe-surface");
+    // Rules cover all op kinds plus the aggregated unresolved entry.
+    let rules = run["tool"]["driver"]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 19);
+    assert!(rules.iter().any(|r| r["id"] == "ffi_call"));
+    // Results: 2 reachable findings + 1 structural + aggregated unresolved
+    // (the unreachable finding must NOT alert).
+    let results = run["results"].as_array().unwrap();
+    assert_eq!(results.len(), 4);
+    let ffi = results
+        .iter()
+        .find(|r| r["ruleId"] == "ffi_call")
+        .expect("no FFI result");
+    assert_eq!(ffi["level"], "warning");
+    assert_eq!(
+        ffi["locations"][0]["physicalLocation"]["region"]["startLine"],
+        10
+    );
+    assert_eq!(
+        ffi["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "ffiwrap/src/lib.rs"
+    );
+    assert_eq!(ffi["properties"]["confidence"], "confirmed");
+    assert_eq!(ffi["properties"]["path"][0], "server::main");
+    assert!(results.iter().any(|r| r["ruleId"] == "unresolved-calls"));
+    assert!(results.iter().any(|r| r["ruleId"] == "send_impl"));
+}
+
+#[test]
 fn control_characters_are_sanitized() {
     let mut report = sample_report();
     report.findings[0].operation.detail = Some("\u{1b}[31mEVIL\u{1b}[0m".into());

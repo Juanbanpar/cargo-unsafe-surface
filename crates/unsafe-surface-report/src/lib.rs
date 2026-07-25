@@ -9,6 +9,7 @@
 
 mod error;
 mod sanitize;
+mod sarif;
 mod text;
 
 pub use error::ReportError;
@@ -22,6 +23,8 @@ pub enum OutputFormat {
     Text,
     /// Machine-readable JSON (see `docs/json-schema.md`).
     Json,
+    /// SARIF 2.1.0 for code-scanning systems.
+    Sarif,
 }
 
 impl OutputFormat {
@@ -31,6 +34,7 @@ impl OutputFormat {
         match name {
             "text" => Some(Self::Text),
             "json" => Some(Self::Json),
+            "sarif" => Some(Self::Sarif),
             _ => None,
         }
     }
@@ -38,7 +42,7 @@ impl OutputFormat {
     /// All format names, for help text.
     #[must_use]
     pub fn names() -> &'static [&'static str] {
-        &["text", "json"]
+        &["text", "json", "sarif"]
     }
 }
 
@@ -52,6 +56,7 @@ pub fn render(report: &ReportModel, format: OutputFormat) -> Result<String, Repo
     match format {
         OutputFormat::Text => Ok(text::render_text(report)),
         OutputFormat::Json => Ok(serde_json::to_string_pretty(report)?),
+        OutputFormat::Sarif => sarif::render_sarif(report),
     }
 }
 
@@ -63,6 +68,7 @@ mod tests {
     fn format_parsing() {
         assert_eq!(OutputFormat::parse("text"), Some(OutputFormat::Text));
         assert_eq!(OutputFormat::parse("json"), Some(OutputFormat::Json));
-        assert_eq!(OutputFormat::parse("sarif"), None);
+        assert_eq!(OutputFormat::parse("sarif"), Some(OutputFormat::Sarif));
+        assert_eq!(OutputFormat::parse("yaml"), None);
     }
 }
