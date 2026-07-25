@@ -154,16 +154,18 @@ pub unsafe fn raw_entry() {
     let dep = analyze_crate("dep", &dep_root, dir.path());
     let inputs = [
         CrateInput {
-            package: &app.package,
-            parsed: &app.parsed,
-            index: &app.index,
-            analysis: &app.analysis,
-        },
-        CrateInput {
             package: &dep.package,
+            is_lib: true,
             parsed: &dep.parsed,
             index: &dep.index,
             analysis: &dep.analysis,
+        },
+        CrateInput {
+            package: &app.package,
+            is_lib: false,
+            parsed: &app.parsed,
+            index: &app.index,
+            analysis: &app.analysis,
         },
     ];
     let graph = build_call_graph(&inputs, &Limits::default());
@@ -301,6 +303,7 @@ pub fn f(a: A) { a.collide(); }
     let solo = analyze_crate("solo", &root, dir.path());
     let inputs = [CrateInput {
         package: &solo.package,
+        is_lib: true,
         parsed: &solo.parsed,
         index: &solo.index,
         analysis: &solo.analysis,
@@ -334,6 +337,7 @@ impl W {
     let solo = analyze_crate("solo", &root, dir.path());
     let inputs = [CrateInput {
         package: &solo.package,
+        is_lib: true,
         parsed: &solo.parsed,
         index: &solo.index,
         analysis: &solo.analysis,
@@ -392,6 +396,7 @@ fn node_limit_truncation_is_diagnosed() {
     let solo = analyze_crate("solo", &root, dir.path());
     let inputs = [CrateInput {
         package: &solo.package,
+        is_lib: true,
         parsed: &solo.parsed,
         index: &solo.index,
         analysis: &solo.analysis,
@@ -428,6 +433,7 @@ pub fn f() {
     let solo = analyze_crate("solo", &root, dir.path());
     let inputs = [CrateInput {
         package: &solo.package,
+        is_lib: true,
         parsed: &solo.parsed,
         index: &solo.index,
         analysis: &solo.analysis,

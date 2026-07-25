@@ -9,22 +9,28 @@
 //! * calling a foreign function adds [`UnsafeOpKind::FfiCall`] — the FFI
 //!   boundary crossing.
 //!
+//! A package's library and each of its binaries are separate *crate
+//! instances* (separate compilation units sharing a crate name); node keys
+//! include the instance so same-named items never collide.
+//!
 //! Unresolvable call sites become explicit [`UnresolvedCall`]s. The graph
-//! is deterministic: nodes are inserted in crate order (sorted by package
-//! name) and adjacency sets use [`BTreeMap`].
+//! is deterministic: nodes are inserted in input order and adjacency sets
+//! use [`BTreeMap`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use unsafe_surface_core::{
     Confidence, Diagnostic, EdgeKind, FunctionKind, ItemPath, PackageId, SafetyJustification,
-    SourceLocation, UnresolvedCall, UnsafeOpKind, UnsafeOperation,
+    SourceLocation, UnresolvedCall, UnresolvedReason, UnsafeOpKind, UnsafeOperation,
 };
 
 use crate::classify::{CalleeRef, CrateAnalysis};
 use crate::index::CrateIndex;
 use crate::justify::find_justification;
 use crate::limits::Limits;
-use crate::resolve::{resolve_method_call, resolve_path_call, GlobalIndex, Resolution};
+use crate::resolve::{
+    resolve_method_call, resolve_path_call, GlobalIndex, Instance, InstanceId, Resolution,
+};
 use crate::source::ParsedCrate;
 
 /// Identifier of a graph node (position in [`CallGraph::nodes`]).
@@ -44,6 +50,8 @@ pub struct EdgeMeta {
 pub struct GraphNode {
     /// Fully qualified item path (including crate name).
     pub path: ItemPath,
+    /// Crate instance this node belongs to.
+    pub instance: InstanceId,
     /// Owning package.
     pub package: PackageId,
     /// Callable kind.
@@ -58,13 +66,26 @@ pub struct GraphNode {
     pub ops: Vec<UnsafeOperation>,
 }
 
+/// Describes one crate instance in the graph.
+#[derive(Debug, Clone)]
+pub struct InstanceInfo {
+    /// Crate name (source-level).
+    pub crate_name: String,
+    /// Whether the instance is the package's library target.
+    pub is_lib: bool,
+    /// Owning package.
+    pub package: PackageId,
+}
+
 /// The approximate call graph of the analysis universe.
 #[derive(Debug, Default)]
 pub struct CallGraph {
     /// All nodes; insertion order is deterministic.
     pub nodes: Vec<GraphNode>,
-    /// `(crate name, item path)` → node id.
-    pub index: BTreeMap<(String, Vec<String>), NodeId>,
+    /// Crate instances.
+    pub instances: Vec<InstanceInfo>,
+    /// `(instance, item path)` → node id.
+    pub index: BTreeMap<(InstanceId, Vec<String>), NodeId>,
     /// Adjacency map: caller → (callee → edge).
     pub edges: Vec<BTreeMap<NodeId, EdgeMeta>>,
     /// Call sites that could not be resolved.
@@ -74,12 +95,24 @@ pub struct CallGraph {
 }
 
 impl CallGraph {
-    /// Node lookup by fully qualified path.
+    /// Node lookup by fully qualified path. Searches instances in
+    /// insertion order (libraries are inserted first by the engine), so a
+    /// lib/bin name collision resolves to the library.
     #[must_use]
     pub fn node(&self, path: &ItemPath) -> Option<NodeId> {
-        self.index
-            .get(&(path.krate.clone(), path.segments.clone()))
-            .copied()
+        self.instances.iter().enumerate().find_map(|(id, info)| {
+            if info.crate_name == path.krate {
+                self.index.get(&(id, path.segments.clone())).copied()
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Node lookup restricted to one instance.
+    #[must_use]
+    pub fn node_in(&self, instance: InstanceId, path: &[String]) -> Option<NodeId> {
+        self.index.get(&(instance, path.to_vec())).copied()
     }
 
     /// Number of edges in the graph.
@@ -89,10 +122,12 @@ impl CallGraph {
     }
 }
 
-/// One analysed crate feeding graph construction.
+/// One analysed crate instance feeding graph construction.
 pub struct CrateInput<'a> {
     /// Package identity.
     pub package: &'a PackageId,
+    /// Whether this instance is the package's library target.
+    pub is_lib: bool,
     /// Parsed sources (needed for safety-comment lookup of resolution-
     /// dependent operations).
     pub parsed: &'a ParsedCrate,
@@ -102,15 +137,21 @@ pub struct CrateInput<'a> {
     pub analysis: &'a CrateAnalysis,
 }
 
-/// Builds the call graph over all analysed crates.
+/// Builds the call graph over all analysed crate instances.
 #[must_use]
 pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph {
     let mut graph = CallGraph::default();
 
-    // Pass 1: create nodes.
-    let mut truncated = false;
+    // Pass 1: register instances and create nodes.
     for input in inputs {
-        let krate = input.package.crate_name();
+        graph.instances.push(InstanceInfo {
+            crate_name: input.package.crate_name(),
+            is_lib: input.is_lib,
+            package: input.package.clone(),
+        });
+    }
+    let mut truncated = false;
+    for (instance, input) in inputs.iter().enumerate() {
         for record in &input.analysis.functions {
             if graph.nodes.len() >= limits.max_graph_nodes {
                 if !truncated {
@@ -125,7 +166,8 @@ pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph
             }
             let id = graph.nodes.len() as NodeId;
             graph.nodes.push(GraphNode {
-                path: ItemPath::new(krate.clone(), record.path.clone()),
+                path: ItemPath::new(input.package.crate_name(), record.path.clone()),
+                instance,
                 package: input.package.clone(),
                 kind: record.kind.clone(),
                 is_pub: record.is_pub,
@@ -134,29 +176,32 @@ pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph
                 ops: record.ops.clone(),
             });
             graph.edges.push(BTreeMap::new());
-            graph.index.insert((krate.clone(), record.path.clone()), id);
+            graph.index.insert((instance, record.path.clone()), id);
         }
     }
 
-    let crate_names: Vec<String> = inputs.iter().map(|i| i.package.crate_name()).collect();
-    let crate_refs: Vec<(&str, &CrateIndex)> = inputs
-        .iter()
-        .zip(&crate_names)
-        .map(|(input, name)| (name.as_str(), input.index))
-        .collect();
-    let global = GlobalIndex::new(&crate_refs, unavailable_crates(inputs));
+    let global = GlobalIndex::new(
+        inputs
+            .iter()
+            .map(|input| Instance {
+                crate_name: input.package.crate_name(),
+                is_lib: input.is_lib,
+                index: input.index,
+            })
+            .collect(),
+        unavailable_crates(inputs),
+    );
 
     // Pass 2: resolve call sites into edges (and attach call ops).
-    for input in inputs {
-        let krate = input.package.crate_name();
+    for (instance, input) in inputs.iter().enumerate() {
         for record in &input.analysis.functions {
-            let Some(&caller_id) = graph.index.get(&(krate.clone(), record.path.clone())) else {
+            let Some(&caller_id) = graph.index.get(&(instance, record.path.clone())) else {
                 continue; // node was truncated by the node limit
             };
             for call in &record.calls {
                 let resolution = match &call.callee {
                     CalleeRef::Path { segments } => {
-                        resolve_path_call(&global, record, &krate, segments)
+                        resolve_path_call(&global, record, instance, segments)
                     }
                     CalleeRef::Method {
                         name,
@@ -164,18 +209,20 @@ pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph
                     } => resolve_method_call(&global, record, name, *receiver_is_self),
                 };
                 match resolution {
-                    Resolution::Callable(target) => {
-                        let Some(&callee_id) = graph
-                            .index
-                            .get(&(target.krate.clone(), target.segments.clone()))
+                    Resolution::Callable(callee_instance, target) => {
+                        let Some(&callee_id) =
+                            graph.index.get(&(callee_instance, target.segments.clone()))
                         else {
                             // Target has no node (truncated): treat as
                             // unresolved rather than dropping the call.
                             graph.unresolved.push(UnresolvedCall {
-                                caller: ItemPath::new(krate.clone(), record.path.clone()),
+                                caller: ItemPath::new(
+                                    input.package.crate_name(),
+                                    record.path.clone(),
+                                ),
                                 callee_text: callee_text(&call.callee),
                                 location: call.location.clone(),
-                                reason: unsafe_surface_core::UnresolvedReason::UnknownName,
+                                reason: UnresolvedReason::UnknownName,
                             });
                             continue;
                         };
@@ -207,7 +254,7 @@ pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph
                     Resolution::NotCallable => {}
                     Resolution::Unresolved(reason) => {
                         graph.unresolved.push(UnresolvedCall {
-                            caller: ItemPath::new(krate.clone(), record.path.clone()),
+                            caller: ItemPath::new(input.package.crate_name(), record.path.clone()),
                             callee_text: callee_text(&call.callee),
                             location: call.location.clone(),
                             reason,
@@ -222,10 +269,11 @@ pub fn build_call_graph(inputs: &[CrateInput<'_>], limits: &Limits) -> CallGraph
 }
 
 /// Dependency crates that appear in sources but were not analysed.
-fn unavailable_crates<'a>(inputs: &[CrateInput<'a>]) -> BTreeSet<&'a str> {
+fn unavailable_crates(inputs: &[CrateInput<'_>]) -> BTreeSet<String> {
     // With the current pipeline every discovered package is parsed, so the
     // set is empty; the hook exists for the dependency-analysis mode where
-    // registry sources may be missing.
+    // registry sources may be missing. Kept as a function so the wiring is
+    // covered by tests.
     let _ = inputs;
     BTreeSet::new()
 }
