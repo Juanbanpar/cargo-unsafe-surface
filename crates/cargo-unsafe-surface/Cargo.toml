@@ -26,3 +26,4 @@ unsafe-surface-report.workspace = true
 [dev-dependencies]
 insta.workspace = true
 tempfile.workspace = true
+unsafe-surface-core.workspace = true
