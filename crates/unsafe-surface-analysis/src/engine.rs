@@ -23,7 +23,7 @@ use crate::reach::Reachability;
 use crate::source::{parse_crate, ParseContext, ParsedCrate};
 
 /// Configuration of one analysis run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AnalysisConfig {
     /// Selected package names (empty = workspace default members).
     pub packages: Vec<String>,
@@ -43,22 +43,6 @@ pub struct AnalysisConfig {
     pub target: Option<String>,
     /// Resource limits.
     pub limits: Limits,
-}
-
-impl Default for AnalysisConfig {
-    fn default() -> Self {
-        Self {
-            packages: Vec::new(),
-            include_dependencies: false,
-            include_dev_dependencies: false,
-            explicit_entries: Vec::new(),
-            features: Vec::new(),
-            all_features: false,
-            no_default_features: false,
-            target: None,
-            limits: Limits::default(),
-        }
-    }
 }
 
 /// The result of one analysis run: the report plus the internal state
