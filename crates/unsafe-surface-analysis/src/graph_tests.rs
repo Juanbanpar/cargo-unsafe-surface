@@ -284,7 +284,7 @@ fn unresolved_calls_carry_precise_reasons() {
 }
 
 #[test]
-fn ambiguous_methods_are_unresolved() {
+fn small_ambiguity_sets_become_may_call_edges() {
     let dir = tempfile::tempdir().unwrap();
     let root = write_crate(
         dir.path(),
@@ -309,9 +309,52 @@ pub fn f(a: A) { a.collide(); }
         analysis: &solo.analysis,
     }];
     let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    // May-call over-approximation: BOTH candidates get inferred edges,
+    // so reachable unsafe code is never hidden by ambiguity.
+    let callees = callee_paths(&graph, "solo::f");
+    assert!(
+        callees.contains(&"solo::A::collide".to_owned()),
+        "{callees:?}"
+    );
+    assert!(
+        callees.contains(&"solo::B::collide".to_owned()),
+        "{callees:?}"
+    );
+    let f_id = graph.node(&ItemPath::parse("solo::f").unwrap()).unwrap();
+    for meta in graph.edges[f_id as usize].values() {
+        assert_eq!(meta.kind, unsafe_surface_core::EdgeKind::InferredMethod);
+    }
+}
+
+#[test]
+fn large_ambiguity_sets_stay_unresolved() {
+    let dir = tempfile::tempdir().unwrap();
+    // Ten types with a method named `collide` exceed the may-call cap.
+    let mut src = String::new();
+    for i in 0..10 {
+        src.push_str(&format!(
+            "struct T{i};
+impl T{i} {{ fn collide(&self) {{}} }}
+"
+        ));
+    }
+    src.push_str(
+        "pub fn f(a: T0) { a.collide(); }
+",
+    );
+    let root = write_crate(dir.path(), "solo", &[("lib.rs", &src)]);
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
     assert_eq!(
         unresolved_reasons(&graph, "<receiver>.collide"),
-        vec![UnresolvedReason::AmbiguousMethod { candidates: 2 }]
+        vec![UnresolvedReason::AmbiguousMethod { candidates: 10 }]
     );
 }
 

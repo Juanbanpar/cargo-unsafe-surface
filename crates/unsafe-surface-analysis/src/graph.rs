@@ -224,6 +224,29 @@ pub fn build_call_graph(
                     ),
                 };
                 match resolution {
+                    Resolution::MayCall(candidates) => {
+                        for (callee_instance, target) in candidates {
+                            if let Some(&callee_id) =
+                                graph.index.get(&(callee_instance, target.segments.clone()))
+                            {
+                                graph.edges[caller_id as usize].entry(callee_id).or_insert(
+                                    EdgeMeta {
+                                        kind: EdgeKind::InferredMethod,
+                                        call_site: call.location.clone(),
+                                    },
+                                );
+                                attach_call_ops(
+                                    &mut graph,
+                                    caller_id,
+                                    callee_id,
+                                    &call.location,
+                                    Confidence::Inferred,
+                                    input,
+                                    &record.module,
+                                );
+                            }
+                        }
+                    }
                     Resolution::Callable(callee_instance, target) => {
                         let Some(&callee_id) =
                             graph.index.get(&(callee_instance, target.segments.clone()))

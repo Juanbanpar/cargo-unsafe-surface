@@ -187,11 +187,19 @@ impl<'a> GlobalIndex<'a> {
     }
 }
 
+/// Maximum candidate count for may-call edges. Beyond it, the edge set
+/// would be noise (e.g. `.iter()` with dozens of candidates) and the
+/// call stays unresolved instead.
+pub const MAX_MAY_CALL_CANDIDATES: usize = 8;
+
 /// The resolution of one call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
     /// Resolved to a callable item `(instance, item path)`.
     Callable(InstanceId, ItemPath),
+    /// Resolved to a small set of plausible callees (may-call
+    /// over-approximation; all edges are marked inferred).
+    MayCall(Vec<(InstanceId, ItemPath)>),
     /// Resolved to a known non-callable item (tuple-struct constructor,
     /// static, …): neither an edge nor an unresolved call.
     NotCallable,
@@ -330,9 +338,7 @@ pub fn resolve_method_call(
                     );
                 }
                 n if n > 1 => {
-                    return Resolution::Unresolved(UnresolvedReason::AmbiguousMethod {
-                        candidates: n,
-                    });
+                    return may_call_or_unresolved(global, found);
                 }
                 _ => {}
             }
@@ -350,7 +356,42 @@ pub fn resolve_method_call(
             )
         }
         0 => Resolution::Unresolved(UnresolvedReason::UnknownName),
+        n if n <= MAX_MAY_CALL_CANDIDATES => Resolution::MayCall(
+            candidates
+                .iter()
+                .map(|(instance, path)| {
+                    (
+                        *instance,
+                        ItemPath::new(global.instance_name(*instance), (*path).to_vec()),
+                    )
+                })
+                .collect(),
+        ),
         n => Resolution::Unresolved(UnresolvedReason::AmbiguousMethod { candidates: n }),
+    }
+}
+
+/// Turns a small ambiguous candidate set into may-call edges.
+fn may_call_or_unresolved(
+    global: &GlobalIndex<'_>,
+    found: Vec<(InstanceId, Vec<String>)>,
+) -> Resolution {
+    if found.len() <= MAX_MAY_CALL_CANDIDATES {
+        Resolution::MayCall(
+            found
+                .into_iter()
+                .map(|(instance, path)| {
+                    (
+                        instance,
+                        ItemPath::new(global.instance_name(instance), path),
+                    )
+                })
+                .collect(),
+        )
+    } else {
+        Resolution::Unresolved(UnresolvedReason::AmbiguousMethod {
+            candidates: found.len(),
+        })
     }
 }
 

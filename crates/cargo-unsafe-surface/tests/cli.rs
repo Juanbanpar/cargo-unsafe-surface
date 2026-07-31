@@ -84,9 +84,10 @@ fn include_dependencies_reports_ffi_paths_and_unreachable() {
     assert!(stdout.contains("[manual Sync implementation] netlib 0.2.0"));
     assert!(stdout.contains("[unsafe trait] netlib 0.2.0"));
 
-    // Unresolved calls carry reasons.
+    // Unresolved calls carry reasons. (The 2-candidate ambiguity in the
+    // fixture becomes inferred may-call edges; large ambiguity sets and
+    // other kinds stay unresolved — both covered by unit tests.)
     assert!(stdout.contains("function pointer"));
-    assert!(stdout.contains("ambiguous method"));
     assert!(stdout.contains("dynamic dispatch"));
 }
 

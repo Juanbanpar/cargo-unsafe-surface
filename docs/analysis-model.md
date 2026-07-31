@@ -61,7 +61,10 @@ to the library instance (extern-crate semantics), matching `rustc`.
 
 * `direct` — path call resolved to a unique known item (confirmed).
 * `inferred_method` — method call resolved by unique-name matching
-  (inferred).
+  (inferred). Small ambiguity sets (up to 8 candidates) produce
+  *may-call* inferred edges to every candidate — over-approximation, so
+  ambiguity never hides reachable unsafe code; larger sets are reported
+  as `ambiguous_method` unresolved calls.
 
 ## Unresolved calls
 

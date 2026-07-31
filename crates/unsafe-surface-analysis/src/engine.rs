@@ -494,8 +494,8 @@ fn default_limitations(std_calls: u64) -> Vec<String> {
         "macro expansions (including procedural macros) are not analysed; calls produced \
          by macros are invisible"
             .to_owned(),
-        "method calls are resolved by unique-name matching and may be attributed to the \
-         wrong impl block"
+        "method calls are resolved by unique-name matching: small ambiguity sets add \
+         inferred may-call edges to every candidate; large sets are reported unresolved"
             .to_owned(),
         "raw pointer dereferences are inferred from dereference expressions inside unsafe \
          contexts"
