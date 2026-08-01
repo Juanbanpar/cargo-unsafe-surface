@@ -6,8 +6,8 @@ from selected entry points** in a Rust program.
 `cargo-unsafe-surface` goes beyond counting `unsafe` blocks. It parses the
 sources of your workspace (and optionally its dependencies), builds an
 approximate call graph, and reports the actual unsafe and foreign-code
-exposure of an application or library — including the call paths that lead
-there.
+exposure of an application or library, including the call paths that
+lead there.
 
 > **This tool provides an approximation, not a proof.** A clean report
 > does not demonstrate that a program is safe, and a finding does not
@@ -116,36 +116,35 @@ allow_unsafe = ["libc", "socket2"]
 ```
 
 Violations exit with code 2; malformed policies are configuration errors
-(exit 1). Unresolved calls are never treated as safe — strict
+(exit 1). Unresolved calls are never treated as safe. Strict
 environments can fail on them via `fail_on_unresolved_calls` or
 `maximum_unresolved_calls`. See [docs/policy.md](docs/policy.md).
 
 ## How it works
 
-1. **Discovery** — `cargo metadata` locates packages, targets and
+1. **Discovery**: `cargo metadata` locates packages, targets and
    dependency sources. No code from the analysed repository is executed
    (no build scripts, no proc macros, no binaries).
-2. **Parsing** — sources are parsed with `syn`; the module tree is walked
+2. **Parsing**: sources are parsed with `syn`; the module tree is walked
    with a limited `#[cfg]` evaluator (features from Cargo, target cfgs
    from `rustc --print cfg`).
-3. **Classification** — a syntax visitor detects 18 classes of unsafe
+3. **Classification**: a syntax visitor detects 18 classes of unsafe
    operations plus `SAFETY:` comments.
-4. **Call graph** — call sites are resolved heuristically (imports,
+4. **Call graph**: call sites are resolved heuristically (imports,
    module scopes, crate paths; methods by unique-name matching).
    Everything unresolvable is reported explicitly with a reason.
-5. **Reachability** — BFS from the entry points yields shortest call
+5. **Reachability**: BFS from the entry points yields shortest call
    paths to every reachable unsafe operation.
 
-Details: [docs/analysis-model.md](docs/analysis-model.md) ·
-[ADR 0001](docs/adr/0001-analysis-approach.md) ·
-[JSON schema](docs/json-schema.md)
+Details: [docs/analysis-model.md](docs/analysis-model.md),
+[docs/json-schema.md](docs/json-schema.md)
 
 ## Limitations
 
-Rust call-graph construction is fundamentally hard. This tool is
-deliberately conservative about what it claims:
+Rust call-graph construction is hard. This tool is conservative about
+what it claims:
 
-* macro expansions (including proc macros) are **not analysed** — calls
+* macro expansions (including proc macros) are **not analysed**. Calls
   produced by macros are invisible;
 * method calls are resolved by unique-name matching and may be attributed
   to the wrong impl;
@@ -153,13 +152,14 @@ deliberately conservative about what it claims:
   partially resolved (reported as unresolved with precise reasons);
 * raw pointer dereferences are *inferred* from dereference expressions in
   unsafe contexts;
-* `#[cfg]` evaluation is approximate — unknown predicates are treated as
+* `#[cfg]` evaluation is approximate; unknown predicates are treated as
   enabled (over-approximation);
 * the standard library is not analysed.
 
 Every report carries its uncertainty: unresolved calls, inferred
 confidence levels, diagnostics and a `limitations` section are part of
-the output — never silently dropped.
+the output and are never silently
+dropped.
 
 ## Security
 
@@ -179,9 +179,8 @@ cargo doc --workspace --all-features --no-deps
 cargo bench -p unsafe-surface-analysis
 ```
 
-See [docs/development.md](docs/development.md),
-[CONTRIBUTING.md](CONTRIBUTING.md) and
-[docs/releasing.md](docs/releasing.md).
+See [docs/development.md](docs/development.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

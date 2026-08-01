@@ -4,6 +4,16 @@ This document describes how `cargo-unsafe-surface` models a Rust program.
 The stable types live in the `unsafe-surface-core` crate; the pipeline
 that produces them lives in `unsafe-surface-analysis`.
 
+## Backend choice
+
+The backend parses sources with `syn` and discovers packages with
+`cargo metadata`. It runs on stable Rust and never executes build
+scripts, proc macros or binaries from the analysed repository.
+`rustc_driver`/MIR and rustdoc JSON were rejected: both need nightly and
+execute project code. rust-analyzer's crates were rejected: unstable
+API and a large dependency tree. The model is backend-agnostic, so a
+compiler backend can be added later.
+
 ## Pipeline
 
 ```
@@ -51,20 +61,20 @@ to the library instance (extern-crate semantics), matching `rustc`.
 
 ## Confidence levels
 
-* `confirmed` — direct syntactic evidence, or a call resolved to a unique
+* `confirmed`: direct syntactic evidence, or a call resolved to a unique
   known item.
-* `inferred` — heuristic evidence: method calls resolved by unique-name
+* `inferred`: heuristic evidence. Method calls resolved by unique-name
   matching, raw-pointer dereferences inferred from unsafe contexts,
   mutable-static accesses matched by name, `*_unchecked` calls.
 
 ## Edge kinds
 
-* `direct` — path call resolved to a unique known item (confirmed).
-* `inferred_method` — method call resolved by unique-name matching
+* `direct`: path call resolved to a unique known item (confirmed).
+* `inferred_method`: method call resolved by unique-name matching
   (inferred). Small ambiguity sets (up to 8 candidates) produce
-  *may-call* inferred edges to every candidate — over-approximation, so
-  ambiguity never hides reachable unsafe code; larger sets are reported
-  as `ambiguous_method` unresolved calls.
+  *may-call* inferred edges to every candidate. This over-approximates,
+  so ambiguity never hides reachable unsafe code. Larger sets are
+  reported as `ambiguous_method` unresolved calls.
 
 ## Unresolved calls
 

@@ -79,7 +79,7 @@ target}` or `{kind: "explicit"}`.
 
 ## Structural findings
 
-`{kind, package, location, detail, justification}` — same value
+`{kind, package, location, detail, justification}`: same value
 vocabularies as findings.
 
 ## Unresolved calls

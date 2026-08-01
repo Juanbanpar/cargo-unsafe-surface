@@ -68,8 +68,8 @@ the user's responsibility.
 * It is not a sandbox: do not point it at directories where file reads
   themselves are dangerous (named pipes, device files). Reads are
   limited to regular files under crate module trees.
-* It does not detect malicious code semantics — it reports unsafe and
+* It does not detect malicious code semantics; it reports unsafe and
   FFI *surface*, not intent.
 * If a future compiler-based backend that executes proc macros is ever
   added, it will be an explicitly opt-in mode with its own documented
-  trust implications (see ADR 0001).
+  trust implications.

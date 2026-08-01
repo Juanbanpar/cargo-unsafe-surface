@@ -41,12 +41,12 @@ allow_unsafe = ["libc", "socket2"]
 
 Evaluation distinguishes:
 
-* **policy violations** — a rule denies something the analysis found;
-* **uncertainty violations** — unresolved calls exceed tolerance. They
+* **policy violations**: a rule denies something the analysis found;
+* **uncertainty violations**: unresolved calls exceed tolerance. They
   fail the command identically (exit 2) but are printed with an
   `[uncertainty]` marker, because they reflect analysis limits rather
   than confirmed unsafe code;
-* **configuration errors** — malformed TOML or unknown keys (exit 1).
+* **configuration errors**: malformed TOML or unknown keys (exit 1).
 
 Unresolved calls are never treated as safe: use
 `fail_on_unresolved_calls` or a `maximum_unresolved_calls` budget in

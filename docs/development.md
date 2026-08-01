@@ -10,7 +10,7 @@ crates/
   unsafe-surface-report/    # text / JSON / SARIF rendering (pure formatting)
   cargo-unsafe-surface/     # CLI: args, orchestration, policy evaluation
 tests/fixtures/             # independent fixture workspaces (never built)
-docs/                       # model, threat model, schema, policy, ADRs
+docs/                       # model, threat model, schema, policy
 ```
 
 Dependency direction is strictly `cli → analysis → cargo/core` and
@@ -54,7 +54,7 @@ Optional but configured: `cargo deny check` (licences/advisories),
   `crates/*/tests/`.
 * Snapshots use `insta` (`INSTA_UPDATE=always cargo test` to bless;
   review diffs before committing). Important fields are *also* asserted
-  structurally — snapshots must not hide semantic regressions.
+  structurally; snapshots must not hide semantic regressions.
 * Property tests use `proptest` for reachability and path validity.
 * Every bug fix ships with a regression test.
 * Tests must be deterministic, offline and isolated (tempdirs).
@@ -62,7 +62,7 @@ Optional but configured: `cargo deny check` (licences/advisories),
 ## CI
 
 `.github/workflows/ci.yml` (required for PRs): fmt, clippy `-D warnings`,
-tests on stable + MSRV (1.85.0), docs, release build — all on Linux.
+tests on stable + MSRV (1.85.0), docs, release build, all on Linux.
 
 `.github/workflows/advisory.yml` (weekly/manual): `cargo deny`,
 coverage via `cargo-llvm-cov`, macOS/Windows builds, nightly tests.
