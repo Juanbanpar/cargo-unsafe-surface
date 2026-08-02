@@ -1,77 +1,164 @@
 # cargo-unsafe-surface
 
-A Cargo subcommand that determines **which unsafe operations are reachable
-from selected entry points** in a Rust program.
+`cargo-unsafe-surface` is a Cargo subcommand for tracing unsafe operations and
+foreign-function calls from selected entry points in a Rust project.
 
-`cargo-unsafe-surface` goes beyond counting `unsafe` blocks. It parses the
-sources of your workspace (and optionally its dependencies), builds an
-approximate call graph, and reports the actual unsafe and foreign-code
-exposure of an application or library, including the call paths that
-lead there.
+It parses workspace sources, builds an approximate call graph, and shows which
+unsafe operations are reachable and how execution can reach them. Dependencies
+can be included when their sources are already available in the local Cargo
+registry or git cache.
 
-> **This tool provides an approximation, not a proof.** A clean report
-> does not demonstrate that a program is safe, and a finding does not
-> demonstrate that a program is unsound. See
-> [Analysis model](docs/analysis-model.md) and
-> [Limitations](#limitations).
+> **This is a static approximation, not a proof of safety or unsoundness.** A
+> clean report does not prove that a program is safe, and a reported finding
+> does not prove that the program is unsound. See the
+> [analysis model](docs/analysis-model.md) and [limitations](#limitations).
 
-## What it answers
+## Why this exists
 
-* Which `unsafe` functions, blocks, traits and impls are reachable from a
-  binary entry point?
-* Which safe public APIs eventually invoke unsafe code?
-* Which reachable paths cross an FFI boundary, and through which
-  dependencies?
-* Where are manual `Send`/`Sync` impls, raw pointer dereferences,
-  `transmute`, inline assembly, unions, `static mut`, `MaybeUninit` and
-  `*_unchecked` calls?
-* What is a shortest call path from an entry point to each unsafe
-  operation?
-* Which unsafe operations exist but are *not* reachable from the selected
-  entry points?
-* Which unsafe operations lack a `SAFETY:` justification comment?
-* Which calls could not be resolved (analysis uncertainty)?
+A raw count of `unsafe` blocks says little about the part of a program that is
+actually exposed. An unsafe operation may be unreachable from the binary,
+library API, or function under review. It may also sit behind several layers of
+calls that make manual inspection difficult.
+
+`cargo-unsafe-surface` separates reachable and unreachable findings. For each
+reachable finding, it records a call path from an entry point to the operation.
+It also reports:
+
+- reachable FFI calls and the packages that provide them;
+- unsafe traits and impls, manual `Send` and `Sync` impls, mutable statics,
+  extern blocks, and foreign function declarations;
+- unsafe operations without a nearby `SAFETY:` comment;
+- unresolved call sites, including the reason resolution failed;
+- confidence levels and analysis diagnostics.
+
+The tool never executes code from the project being analysed. Build scripts,
+procedural macros, and project binaries are not run.
 
 ## Installation
 
+From a checkout:
+
 ```console
-cargo install --path crates/cargo-unsafe-surface   # from a checkout
-# or, once published:
+cargo install --path crates/cargo-unsafe-surface
+```
+
+Once the crate is published:
+
+```console
 cargo install cargo-unsafe-surface
 ```
 
-Requires stable Rust 1.85+ and Cargo. Linux is the primary platform;
-macOS and Windows build in CI.
+Requires stable Rust 1.85 or later and Cargo. Linux is the primary platform;
+macOS and Windows builds are covered by CI.
 
-## Usage
+## Quick start
+
+Run the command from a Cargo project:
 
 ```console
-cargo unsafe-surface --bin server
-cargo unsafe-surface --lib
-cargo unsafe-surface --package my-package --include-dependencies
-cargo unsafe-surface --entry crate::api::process_request
-cargo unsafe-surface --format json --output report.json
-cargo unsafe-surface --format sarif --output results.sarif
-cargo unsafe-surface --policy policy.toml
+cargo unsafe-surface
 ```
 
-Key flags: `--lib`, `--bin NAME`, `--package SPEC`, `--entry PATH`,
-`--include-dependencies`, `--include-dev-dependencies` (dev-deps are
-excluded by default), `--format text|json|sarif`, `--output FILE`,
-`--policy FILE`, `--features`, `--all-features`,
-`--no-default-features`, `--target TRIPLE`, `--offline`,
-`--manifest-path PATH`.
+With no target or entry-point flags, the tool analyses every binary target in
+the selected packages.
 
-Default target selection: all binary targets of the selected packages;
-if none exist, their library public API.
+Common examples:
 
-### Exit codes
+```console
+# One binary target
+cargo unsafe-surface --bin server
 
-| Code | Meaning                                |
-| ---- | -------------------------------------- |
-| 0    | Analysis succeeded, no policy violations |
-| 1    | Operational failure (discovery, I/O, usage, invalid policy file) |
-| 2    | Policy violations found                |
+# The public API of a library target
+cargo unsafe-surface --lib
+
+# One or more packages
+cargo unsafe-surface --package my-package
+cargo unsafe-surface --package a --package b
+
+# Explicit function entry points
+cargo unsafe-surface --entry crate::api::process_request
+cargo unsafe-surface --entry server::main --entry netlib::run
+
+# Dependencies whose sources are already on disk
+cargo unsafe-surface --include-dependencies
+
+# Include dev-dependencies as well
+cargo unsafe-surface --include-dependencies --include-dev-dependencies
+
+# Feature selection
+cargo unsafe-surface --features tls,compress
+cargo unsafe-surface --all-features
+cargo unsafe-surface --no-default-features
+
+# Evaluate #[cfg] for another target
+cargo unsafe-surface --target aarch64-unknown-linux-gnu
+
+# Machine-readable output
+cargo unsafe-surface --format json --output report.json
+cargo unsafe-surface --format sarif --output results.sarif
+
+# Enforce a policy
+cargo unsafe-surface --policy policy.toml
+
+# Prevent network access during Cargo dependency resolution
+cargo unsafe-surface --offline
+
+# Analyse a project outside the current directory
+cargo unsafe-surface --manifest-path /path/to/project/Cargo.toml
+```
+
+## Entry points and analysis scope
+
+Without `--package`, Cargo workspace default members are selected. If the
+workspace does not declare default members, all members are selected.
+
+Entry points can come from several sources:
+
+- `--bin NAME` uses the named binary's `main` function;
+- `--lib` uses the public API of the library target;
+- `--entry PATH` adds an explicit function.
+
+These options are additive. For example, `--bin server --entry netlib::run`
+starts from both entry points. If none of `--bin`, `--lib`, or `--entry` is
+provided, every binary target in the selected packages is used.
+
+Dependency analysis is limited to source code already present in the local
+Cargo registry or git caches. The tool does not download dependency sources.
+Dev-dependencies are excluded by default because they are not part of the
+shipped artifact. Build dependencies are always excluded.
+
+## Report contents
+
+Each finding identifies:
+
+- the operation kind;
+- source location;
+- package and target;
+- confidence level;
+- whether a `SAFETY:` justification was found;
+- a call path, when the finding is reachable.
+
+Classified operation kinds include unsafe blocks, unsafe functions, calls to
+unsafe functions, FFI calls, raw pointer dereferences, `transmute`, inline
+assembly, union field access, mutable static access, `MaybeUninit` use, and
+unchecked API calls.
+
+Unreachable unsafe operations are listed separately. Calls that cannot be
+resolved are not treated as safe; they are reported with a reason such as an
+unknown name, ambiguous method, dynamic dispatch, function pointer, macro
+expansion, standard-library code, or unavailable dependency sources.
+
+### Output formats
+
+Text output is the default:
+
+```console
+cargo unsafe-surface --format text
+```
+
+JSON output uses a versioned schema documented in
+[docs/json-schema.md](docs/json-schema.md). SARIF is available for integration
+with code-scanning tools.
 
 ### Example output
 
@@ -102,6 +189,8 @@ Finding 2
 
 ## Policy mode
 
+A policy file can turn findings into CI failures:
+
 ```toml
 [policy]
 deny_reachable_inline_assembly = true
@@ -115,59 +204,91 @@ deny = ["deprecated-native-wrapper"]
 allow_unsafe = ["libc", "socket2"]
 ```
 
-Violations exit with code 2; malformed policies are configuration errors
-(exit 1). Unresolved calls are never treated as safe. Strict
-environments can fail on them via `fail_on_unresolved_calls` or
-`maximum_unresolved_calls`. See [docs/policy.md](docs/policy.md).
+Policy violations exit with code 2. An invalid policy file is an operational
+error and exits with code 1.
 
-## How it works
+Unresolved calls remain visible even when they do not fail the policy. Stricter
+configurations can reject them with `fail_on_unresolved_calls` or
+`maximum_unresolved_calls`.
 
-1. **Discovery**: `cargo metadata` locates packages, targets and
-   dependency sources. No code from the analysed repository is executed
-   (no build scripts, no proc macros, no binaries).
-2. **Parsing**: sources are parsed with `syn`; the module tree is walked
-   with a limited `#[cfg]` evaluator (features from Cargo, target cfgs
-   from `rustc --print cfg`).
-3. **Classification**: a syntax visitor detects 18 classes of unsafe
-   operations plus `SAFETY:` comments.
-4. **Call graph**: call sites are resolved heuristically (imports,
-   module scopes, crate paths; methods by unique-name matching).
-   Everything unresolvable is reported explicitly with a reason.
-5. **Reachability**: BFS from the entry points yields shortest call
-   paths to every reachable unsafe operation.
+See [docs/policy.md](docs/policy.md) for the full policy format.
 
-Details: [docs/analysis-model.md](docs/analysis-model.md),
-[docs/json-schema.md](docs/json-schema.md)
+## CLI reference
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--manifest-path PATH` | current directory | Analyse the Cargo project at `PATH`. |
+| `--package SPEC` | workspace default members | Analyse only the named package. Repeatable. |
+| `--lib` | off | Use the library target's public API as entry points. |
+| `--bin NAME` | off | Use the named binary's `main` function as an entry point. Repeatable. |
+| `--entry PATH` | none | Add an explicit function entry point, such as `crate::api::process`. Repeatable. |
+| `--include-dependencies` | off | Analyse dependency sources found in local Cargo registry and git caches. |
+| `--include-dev-dependencies` | off | Include dev-dependencies. |
+| `--exclude-dev-dependencies` | on | Exclude dev-dependencies; conflicts with `--include-dev-dependencies`. |
+| `--features LIST` | none | Enable a comma-separated list of features. |
+| `--all-features` | off | Enable every feature in each selected package. |
+| `--no-default-features` | off | Disable default features. |
+| `--target TRIPLE` | host target | Evaluate `#[cfg]` for another target triple. |
+| `--format FORMAT` | `text` | Select `text`, `json`, or `sarif` output. |
+| `--output FILE` | standard output | Write the report to a file. |
+| `--policy FILE` | none | Evaluate a policy after analysis. |
+| `--offline` | off | Prevent Cargo from using the network during dependency resolution. |
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Analysis completed with no policy violations. |
+| 1 | Operational failure, including discovery, I/O, usage, or policy parsing errors. |
+| 2 | Policy violations were found. |
+
+## Analysis model
+
+The analysis runs in five stages:
+
+1. **Discovery.** `cargo metadata` locates packages, targets, and dependency
+   sources.
+2. **Parsing.** `syn` parses the source tree. A limited `#[cfg]` evaluator uses
+   Cargo feature selection and target configuration from `rustc --print cfg`.
+3. **Classification.** A syntax visitor identifies 18 classes of unsafe
+   operations and checks for `SAFETY:` comments.
+4. **Call-graph construction.** Call sites are resolved heuristically from
+   imports, module scopes, crate paths, and unique method names.
+5. **Reachability.** Breadth-first search finds the shortest known path from an
+   entry point to each reachable unsafe operation.
+
+See [docs/analysis-model.md](docs/analysis-model.md) for implementation details.
 
 ## Limitations
 
-Rust call-graph construction is hard. This tool is conservative about
-what it claims:
+Rust call-graph construction cannot be made complete from source syntax alone.
+The current analysis has the following limits:
 
-* macro expansions (including proc macros) are **not analysed**. Calls
-  produced by macros are invisible;
-* method calls are resolved by unique-name matching and may be attributed
-  to the wrong impl;
-* trait objects, function pointers, closures and generics are only
-  partially resolved (reported as unresolved with precise reasons);
-* raw pointer dereferences are *inferred* from dereference expressions in
-  unsafe contexts;
-* `#[cfg]` evaluation is approximate; unknown predicates are treated as
-  enabled (over-approximation);
-* the standard library is not analysed.
+- Macro expansions, including procedural macros, are not analysed. Calls
+  generated by macros are invisible to the call graph.
+- Method calls are matched by unique name and can be assigned to the wrong
+  implementation.
+- Trait objects, function pointers, closures, and generics are only partially
+  resolved.
+- Raw pointer dereferences are inferred from dereference expressions inside
+  unsafe contexts.
+- `#[cfg]` evaluation is approximate. Unknown predicates are treated as enabled,
+  which can over-approximate the analysed code.
+- The standard library is not analysed.
 
-Every report carries its uncertainty: unresolved calls, inferred
-confidence levels, diagnostics and a `limitations` section are part of
-the output and are never silently
-dropped.
+Reports retain this uncertainty through unresolved-call records, confidence
+levels, diagnostics, and a limitations section.
 
-## Security
+## Security model
 
-The analysed repository is treated as **untrusted input**: the default
-analysis path executes nothing from it. The tool defends against
-oversized inputs, cyclic module structures, path traversal via
-`#[path]`, denial-of-service through graph size, and terminal escape
-injection in output. See [docs/threat-model.md](docs/threat-model.md).
+The analysed repository is untrusted input. The default analysis path does not
+execute its build scripts, procedural macros, binaries, or other project code.
+
+The implementation includes protections against oversized inputs, cyclic
+module structures, path traversal through `#[path]`, excessive graph growth,
+and terminal escape injection in generated output.
+
+See [docs/threat-model.md](docs/threat-model.md) for details.
 
 ## Development
 
@@ -184,5 +305,5 @@ See [docs/development.md](docs/development.md) and
 
 ## License
 
-Licensed under the [GNU General Public License v3.0](LICENSE) or (at your
-option) any later version (`GPL-3.0-or-later`).
+Licensed under the [GNU General Public License v3.0](LICENSE), or, at your
+option, any later version (`GPL-3.0-or-later`).
