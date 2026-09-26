@@ -154,29 +154,10 @@ struct Properties {
 }
 
 /// All rule kinds (stable ids in snake_case, matching the JSON schema).
-const RULE_KINDS: &[UnsafeOpKind] = &[
-    UnsafeOpKind::UnsafeBlock,
-    UnsafeOpKind::UnsafeFn,
-    UnsafeOpKind::UnsafeFnCall,
-    UnsafeOpKind::UnsafeTrait,
-    UnsafeOpKind::UnsafeTraitImpl,
-    UnsafeOpKind::SendImpl,
-    UnsafeOpKind::SyncImpl,
-    UnsafeOpKind::ForeignFunction,
-    UnsafeOpKind::ExternBlock,
-    UnsafeOpKind::FfiCall,
-    UnsafeOpKind::RawPointerDeref,
-    UnsafeOpKind::Transmute,
-    UnsafeOpKind::InlineAssembly,
-    UnsafeOpKind::UnionFieldAccess,
-    UnsafeOpKind::MutableStaticAccess,
-    UnsafeOpKind::MutableStaticDefinition,
-    UnsafeOpKind::MaybeUninitUse,
-    UnsafeOpKind::UncheckedCall,
-];
+const UNRESOLVED_RULE_ID: &str = "unresolved-calls";
 
 fn build_log(report: &ReportModel) -> SarifLog {
-    let mut rules: Vec<Rule> = RULE_KINDS
+    let mut rules: Vec<Rule> = UnsafeOpKind::ALL
         .iter()
         .map(|kind| Rule {
             id: rule_id(*kind),
@@ -187,7 +168,7 @@ fn build_log(report: &ReportModel) -> SarifLog {
         })
         .collect();
     rules.push(Rule {
-        id: "unresolved-calls".to_owned(),
+        id: UNRESOLVED_RULE_ID.to_owned(),
         name: "UnresolvedCalls".to_owned(),
         short_description: Message {
             text: "call sites that could not be resolved (analysis uncertainty)".to_owned(),
@@ -235,7 +216,7 @@ fn build_log(report: &ReportModel) -> SarifLog {
                 op.location.column,
             )],
             properties: Properties {
-                confidence: confidence(op.confidence),
+                confidence: op.confidence.label(),
                 justification: Some(op.justification.label()),
                 package: Some(finding.package.to_string()),
                 path: finding
@@ -284,7 +265,7 @@ fn build_log(report: &ReportModel) -> SarifLog {
             })
             .unwrap_or_default();
         results.push(Result_ {
-            rule_id: "unresolved-calls".to_owned(),
+            rule_id: UNRESOLVED_RULE_ID.to_owned(),
             level: "note",
             message: Message {
                 text: format!(
@@ -348,23 +329,13 @@ fn build_log(report: &ReportModel) -> SarifLog {
 }
 
 fn rule_id(kind: UnsafeOpKind) -> String {
-    serde_json::to_value(kind)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| format!("{kind:?}"))
+    kind.as_str().to_owned()
 }
 
 fn level(confidence: Confidence) -> &'static str {
     match confidence {
         Confidence::Confirmed => "warning",
         Confidence::Inferred => "note",
-    }
-}
-
-fn confidence(confidence: Confidence) -> &'static str {
-    match confidence {
-        Confidence::Confirmed => "confirmed",
-        Confidence::Inferred => "inferred",
     }
 }
 

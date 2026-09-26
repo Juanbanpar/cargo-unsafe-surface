@@ -53,6 +53,54 @@ pub enum UnsafeOpKind {
 }
 
 impl UnsafeOpKind {
+    /// Every operation kind.
+    pub const ALL: &'static [Self] = &[
+        Self::UnsafeBlock,
+        Self::UnsafeFn,
+        Self::UnsafeFnCall,
+        Self::UnsafeTrait,
+        Self::UnsafeTraitImpl,
+        Self::SendImpl,
+        Self::SyncImpl,
+        Self::ForeignFunction,
+        Self::ExternBlock,
+        Self::FfiCall,
+        Self::RawPointerDeref,
+        Self::Transmute,
+        Self::InlineAssembly,
+        Self::UnionFieldAccess,
+        Self::MutableStaticAccess,
+        Self::MutableStaticDefinition,
+        Self::MaybeUninitUse,
+        Self::UncheckedCall,
+    ];
+
+    /// The stable snake_case identifier used in serialized reports and
+    /// SARIF rule ids.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnsafeBlock => "unsafe_block",
+            Self::UnsafeFn => "unsafe_fn",
+            Self::UnsafeFnCall => "unsafe_fn_call",
+            Self::UnsafeTrait => "unsafe_trait",
+            Self::UnsafeTraitImpl => "unsafe_trait_impl",
+            Self::SendImpl => "send_impl",
+            Self::SyncImpl => "sync_impl",
+            Self::ForeignFunction => "foreign_function",
+            Self::ExternBlock => "extern_block",
+            Self::FfiCall => "ffi_call",
+            Self::RawPointerDeref => "raw_pointer_deref",
+            Self::Transmute => "transmute",
+            Self::InlineAssembly => "inline_assembly",
+            Self::UnionFieldAccess => "union_field_access",
+            Self::MutableStaticAccess => "mutable_static_access",
+            Self::MutableStaticDefinition => "mutable_static_definition",
+            Self::MaybeUninitUse => "maybe_uninit_use",
+            Self::UncheckedCall => "unchecked_call",
+        }
+    }
+
     /// Short human-readable label used in text reports.
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -163,31 +211,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_kind_has_a_label() {
-        // Guards against adding a variant without a label (match is
-        // exhaustive, this asserts labels are non-empty and unique enough).
-        let kinds = [
-            UnsafeOpKind::UnsafeBlock,
-            UnsafeOpKind::UnsafeFn,
-            UnsafeOpKind::UnsafeFnCall,
-            UnsafeOpKind::UnsafeTrait,
-            UnsafeOpKind::UnsafeTraitImpl,
-            UnsafeOpKind::SendImpl,
-            UnsafeOpKind::SyncImpl,
-            UnsafeOpKind::ForeignFunction,
-            UnsafeOpKind::ExternBlock,
-            UnsafeOpKind::FfiCall,
-            UnsafeOpKind::RawPointerDeref,
-            UnsafeOpKind::Transmute,
-            UnsafeOpKind::InlineAssembly,
-            UnsafeOpKind::UnionFieldAccess,
-            UnsafeOpKind::MutableStaticAccess,
-            UnsafeOpKind::MutableStaticDefinition,
-            UnsafeOpKind::MaybeUninitUse,
-            UnsafeOpKind::UncheckedCall,
-        ];
-        for kind in kinds {
+    fn all_covers_every_kind() {
+        for kind in UnsafeOpKind::ALL {
+            // The exhaustive match is the completeness guard: adding a
+            // variant forces a new arm here (and in `as_str`).
+            match kind {
+                UnsafeOpKind::UnsafeBlock
+                | UnsafeOpKind::UnsafeFn
+                | UnsafeOpKind::UnsafeFnCall
+                | UnsafeOpKind::UnsafeTrait
+                | UnsafeOpKind::UnsafeTraitImpl
+                | UnsafeOpKind::SendImpl
+                | UnsafeOpKind::SyncImpl
+                | UnsafeOpKind::ForeignFunction
+                | UnsafeOpKind::ExternBlock
+                | UnsafeOpKind::FfiCall
+                | UnsafeOpKind::RawPointerDeref
+                | UnsafeOpKind::Transmute
+                | UnsafeOpKind::InlineAssembly
+                | UnsafeOpKind::UnionFieldAccess
+                | UnsafeOpKind::MutableStaticAccess
+                | UnsafeOpKind::MutableStaticDefinition
+                | UnsafeOpKind::MaybeUninitUse
+                | UnsafeOpKind::UncheckedCall => {}
+            }
             assert!(!kind.label().is_empty());
+            assert!(!kind.as_str().is_empty());
+            // `as_str` must agree with the serialized vocabulary.
+            let json = serde_json::to_value(kind).unwrap();
+            assert_eq!(json.as_str(), Some(kind.as_str()));
         }
     }
 

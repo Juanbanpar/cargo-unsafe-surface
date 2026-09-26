@@ -8,9 +8,7 @@
 
 use std::fmt::Write as _;
 
-use unsafe_surface_core::{
-    Confidence, DependencyOrigin, Reachability, ReportModel, Severity, UnsafeOpKind,
-};
+use unsafe_surface_core::{Reachability, ReportModel, UnsafeOpKind};
 
 use crate::sanitize::sanitize;
 
@@ -109,7 +107,7 @@ fn findings_section(out: &mut String, report: &ReportModel) {
         let op = &finding.operation;
         let _ = writeln!(out, "Finding {}", index + 1);
         let _ = writeln!(out, "  Kind:          {}", op.kind.label());
-        let _ = writeln!(out, "  Confidence:    {}", confidence_label(op.confidence));
+        let _ = writeln!(out, "  Confidence:    {}", op.confidence.label());
         let _ = writeln!(out, "  Justification: {}", op.justification.label());
         let _ = writeln!(
             out,
@@ -243,11 +241,7 @@ fn diagnostics_section(out: &mut String, report: &ReportModel) {
     }
     let _ = writeln!(out, "Diagnostics: {}", report.diagnostics.len());
     for diagnostic in &report.diagnostics {
-        let severity = match diagnostic.severity {
-            Severity::Info => "info",
-            Severity::Warning => "warning",
-            Severity::Error => "error",
-        };
+        let severity = diagnostic.severity.label();
         let location = diagnostic
             .location
             .as_ref()
@@ -280,24 +274,11 @@ fn count_line(what: &str, total: u64, listed: usize) -> String {
     }
 }
 
-fn confidence_label(confidence: Confidence) -> &'static str {
-    match confidence {
-        Confidence::Confirmed => "confirmed",
-        Confidence::Inferred => "inferred",
-    }
-}
-
 fn package_label(finding: &unsafe_surface_core::Finding) -> String {
-    let origin = match finding.package.origin {
-        DependencyOrigin::Workspace => "workspace",
-        DependencyOrigin::Path => "path",
-        DependencyOrigin::Registry => "registry",
-        DependencyOrigin::Git => "git",
-        DependencyOrigin::Unknown => "unknown",
-    };
     sanitize(&format!(
-        "{} {} ({origin})",
+        "{} {} ({})",
         finding.package.name,
-        finding.package.version.as_deref().unwrap_or("<unknown>")
+        finding.package.version.as_deref().unwrap_or("<unknown>"),
+        finding.package.origin.label()
     ))
 }
