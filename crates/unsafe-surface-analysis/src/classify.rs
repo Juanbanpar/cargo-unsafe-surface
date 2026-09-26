@@ -38,7 +38,7 @@ use crate::index::{
     flatten_use_tree, foreign_fn_decl, is_pub, joined, path_segments, type_path_segments,
     CrateIndex, ModuleImports,
 };
-use crate::justify::find_justification;
+use crate::justify::{find_justification, Justifications};
 use crate::source::ParsedCrate;
 
 /// A reference to a callee, as written in the source.
@@ -449,6 +449,7 @@ fn function_record(
         index,
         module,
         record: &mut record,
+        justifications: Justifications::new(&module.text),
         unsafe_depth: usize::from(is_unsafe_fn),
         write_depth: 0,
         union_locals: BTreeSet::new(),
@@ -463,6 +464,8 @@ struct FnBodyVisitor<'a> {
     index: &'a CrateIndex,
     module: &'a crate::source::ParsedModule,
     record: &'a mut FunctionRecord,
+    /// Cached `SAFETY:` comment lookups for the module's text.
+    justifications: Justifications<'a>,
     /// Nesting depth of unsafe contexts (`unsafe {}` blocks; starts at 1
     /// for `unsafe fn` bodies).
     unsafe_depth: usize,
@@ -495,7 +498,7 @@ impl FnBodyVisitor<'_> {
 
     fn op(&mut self, kind: UnsafeOpKind, span: proc_macro2::Span) -> UnsafeOperation {
         UnsafeOperation::new(kind, location_of(self.module, span))
-            .with_justification(find_justification(&self.module.text, start_line(span)))
+            .with_justification(self.justifications.find(start_line(span)))
     }
 
     fn last_segment_is(segments: &[String], names: &[&str]) -> bool {
