@@ -256,6 +256,51 @@ pub fn call() {
 }
 
 #[test]
+fn binary_paths_resolve_to_their_library() {
+    // `pkg::helper()` inside the binary must resolve to the library's
+    // `helper` (extern-crate semantics), not to the binary's own.
+    let dir = tempfile::tempdir().unwrap();
+    let lib_root = write_crate(dir.path(), "pkg", &[("lib.rs", "pub fn helper() {}\n")]);
+    let bin_root = write_crate(
+        dir.path(),
+        "pkg",
+        &[(
+            "main.rs",
+            "fn main() {\n    pkg::helper();\n}\nfn helper() {}\n",
+        )],
+    );
+    let lib = analyze_crate("pkg", &lib_root, dir.path());
+    let bin = analyze_crate("pkg", &bin_root, dir.path());
+    let inputs = [
+        CrateInput {
+            package: &lib.package,
+            is_lib: true,
+            parsed: &lib.parsed,
+            index: &lib.index,
+            analysis: &lib.analysis,
+        },
+        CrateInput {
+            package: &bin.package,
+            is_lib: false,
+            parsed: &bin.parsed,
+            index: &bin.index,
+            analysis: &bin.analysis,
+        },
+    ];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    let lib_helper = graph.node_in(0, &["helper".to_owned()]).unwrap();
+    let bin_helper = graph.node_in(1, &["helper".to_owned()]).unwrap();
+    assert_ne!(lib_helper, bin_helper, "the fixture needs both definitions");
+    let main = graph.node_in(1, &["main".to_owned()]).unwrap();
+    let callees: Vec<NodeId> = graph.edges[main as usize].keys().copied().collect();
+    assert_eq!(
+        callees,
+        [lib_helper],
+        "the binary's own helper must not shadow the library's"
+    );
+}
+
+#[test]
 fn unsafe_and_ffi_calls_attach_ops_to_caller() {
     let (graph, _dir) = scenario();
     let main_id = graph.node(&ItemPath::parse("app::main").unwrap()).unwrap();

@@ -169,20 +169,22 @@ impl<'a> GlobalIndex<'a> {
     }
 
     /// Instances to probe for a path whose first segment is `name`,
-    /// called from `caller`: the caller's own instance when it has that
-    /// name (handles `crate-name::` inside its own crate) plus library
-    /// instances of that name (extern-crate semantics).
+    /// called from `caller`: library instances of that name first
+    /// (extern-crate semantics — `name::` from a binary of the same
+    /// package resolves to its library, matching rustc), then the
+    /// caller's own instance when it has that name (covering libraries
+    /// and binaries without a library target).
     fn probe_instances(&self, caller: InstanceId, name: &str) -> Vec<InstanceId> {
         let mut probes = Vec::new();
-        if self.instances[caller].crate_name == name {
-            probes.push(caller);
-        }
         if let Some(ids) = self.by_name.get(name) {
             for &id in ids {
-                if id != caller && self.instances[id].is_lib {
+                if self.instances[id].is_lib {
                     probes.push(id);
                 }
             }
+        }
+        if self.instances[caller].crate_name == name && !probes.contains(&caller) {
+            probes.push(caller);
         }
         probes
     }
