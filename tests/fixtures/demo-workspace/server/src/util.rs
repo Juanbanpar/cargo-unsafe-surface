@@ -33,7 +33,8 @@ impl Beta {
     fn name(&self) {}
 }
 
-/// Two candidates named `name`: resolution must report ambiguity.
+/// Two candidates named `name`: the small ambiguity set becomes
+/// inferred may-call edges to both candidates.
 pub fn ambiguous_call() {
     let a = Alpha;
     a.name();

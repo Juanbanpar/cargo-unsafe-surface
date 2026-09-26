@@ -50,8 +50,8 @@ impl OutputFormat {
 ///
 /// # Errors
 ///
-/// Returns [`ReportError`] when serialization fails (only possible for
-/// JSON in pathological cases).
+/// Returns [`ReportError`] when JSON or SARIF serialization fails
+/// (pathological cases only; the text format cannot fail).
 pub fn render(report: &ReportModel, format: OutputFormat) -> Result<String, ReportError> {
     match format {
         OutputFormat::Text => Ok(text::render_text(report)),

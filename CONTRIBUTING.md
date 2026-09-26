@@ -32,4 +32,5 @@ licensed under the project's licence, GPL-3.0-or-later.
 
 The JSON report schema is versioned (`schema_version: 1`). Within a
 version, only additive changes are allowed. Breaking changes require a
-schema version bump and a note in the changelog.
+schema version bump and a migration note in
+[docs/json-schema.md](json-schema.md).

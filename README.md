@@ -118,9 +118,11 @@ Entry points can come from several sources:
 - `--lib` uses the public API of the library target;
 - `--entry PATH` adds an explicit function.
 
-These options are additive. For example, `--bin server --entry netlib::run`
-starts from both entry points. If none of `--bin`, `--lib`, or `--entry` is
-provided, every binary target in the selected packages is used.
+These options are additive: `--entry` adds to the target selection instead
+of replacing it. For example, `--bin server --entry netlib::run` starts from
+both entry points, and `--entry netlib::run` alone still includes every
+binary target of the selected packages. Without `--bin` or `--lib`, every
+binary target in the selected packages is used.
 
 Dependency analysis is limited to source code already present in the local
 Cargo registry or git caches. The tool does not download dependency sources.
@@ -133,7 +135,8 @@ Each finding identifies:
 
 - the operation kind;
 - source location;
-- package and target;
+- the package, and the called target for calls to unsafe functions and
+  FFI;
 - confidence level;
 - whether a `SAFETY:` justification was found;
 - a call path, when the finding is reachable.
@@ -165,11 +168,15 @@ with code-scanning tools.
 ```text
 Unsafe Surface Report
 
+Tool: cargo-unsafe-surface 0.1.0
+Schema version: 1
+
 Entry points:
   server::main
 
 Summary:
   Reachable unsafe operations: 12
+  Reachable unsafe functions:  2
   Reachable FFI calls:         1
   Manual Send/Sync impls:      2
   ...
@@ -178,9 +185,10 @@ Finding 2
   Kind:          FFI call
   Confidence:    confirmed
   Justification: present
-  Location:      ffiwrap/src/lib.rs:10:18
+  Location:      ffiwrap/src/lib.rs:10:14
   Package:       ffiwrap 0.3.0 (workspace)
   Target:        ffiwrap::socket
+  Enclosing:     ffiwrap::create_socket
   Path:
     server::main
     -> ffiwrap::create_socket  (server/src/main.rs:10)
