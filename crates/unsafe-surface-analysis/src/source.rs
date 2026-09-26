@@ -127,14 +127,6 @@ impl Walker<'_, '_> {
         depth: usize,
     ) -> Result<(), AnalysisError> {
         let is_root = module_path.is_empty();
-        if depth > self.context.limits.max_module_depth {
-            self.diagnostics.push(Diagnostic::warning(format!(
-                "module depth limit ({}) exceeded at {}; subtree skipped",
-                self.context.limits.max_module_depth,
-                file.display()
-            )));
-            return Ok(());
-        }
         if self.files_parsed >= self.context.limits.max_files_per_crate {
             self.diagnostics.push(Diagnostic::warning(format!(
                 "per-crate file limit ({}) exceeded; remaining modules skipped",
@@ -164,6 +156,9 @@ impl Walker<'_, '_> {
             // sharing exists); silently keep the first occurrence.
             return Ok(());
         }
+        // Count every file that is attempted: unreadable, oversized and
+        // unparseable files must not escape the file limits.
+        self.files_parsed += 1;
 
         let file_display = display_path(file, self.context.display_root);
 
@@ -222,7 +217,6 @@ impl Walker<'_, '_> {
                 return Ok(());
             }
         };
-        self.files_parsed += 1;
         let text: Rc<str> = Rc::from(text.as_str());
 
         // Directory contexts for child module resolution. Rust uses two
@@ -307,6 +301,17 @@ impl Walker<'_, '_> {
         let name = item_mod.ident.to_string();
         let mut child_path = module_path.to_vec();
         child_path.push(name.clone());
+
+        // The depth limit is enforced here, the single recursion point,
+        // so file modules *and* inline `mod name { ... }` blocks are
+        // bounded: inline nesting recurses without ever touching a file.
+        if depth + 1 > self.context.limits.max_module_depth {
+            self.diagnostics.push(Diagnostic::warning(format!(
+                "module depth limit ({}) exceeded at {}; subtree skipped",
+                self.context.limits.max_module_depth, current.display
+            )));
+            return;
+        }
 
         if let Some((_, items)) = &item_mod.content {
             // Inline module `mod name { ... }`: plain `mod` declarations
@@ -593,6 +598,74 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.message.contains("file limit")));
+    }
+
+    #[test]
+    fn file_count_limit_counts_unparseable_files() {
+        // Files that fail to parse are still attempted work and must
+        // count against the limit instead of being read without end.
+        let mut files: Vec<(String, String)> = vec![(
+            "lib.rs".to_owned(),
+            (0..8).map(|i| format!("mod m{i};\n")).collect(),
+        )];
+        for i in 0..8 {
+            files.push((format!("m{i}.rs"), "fn broken((".to_owned()));
+        }
+        let limits = Limits {
+            max_files_per_crate: 3,
+            ..Limits::default()
+        };
+        let borrowed: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(name, content)| (name.as_str(), content.as_str()))
+            .collect();
+        let (parsed, _dir) = parse_with_limits(&borrowed, limits);
+        let syntax_errors = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("syntax error"))
+            .count();
+        assert_eq!(
+            syntax_errors, 2,
+            "only the remaining budget may be attempted: {:?}",
+            parsed.diagnostics
+        );
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("file limit")));
+    }
+
+    #[test]
+    fn inline_module_nesting_is_depth_limited() {
+        // Inline modules recurse without touching any file; the depth
+        // limit must stop hostile nesting.
+        let mut src = String::new();
+        for i in 0..20 {
+            src.push_str(&format!("mod m{i} {{\n"));
+        }
+        src.push_str("fn deep() {}\n");
+        for _ in 0..20 {
+            src.push_str("}\n");
+        }
+        let limits = Limits {
+            max_module_depth: 4,
+            ..Limits::default()
+        };
+        let (parsed, _dir) = parse_with_limits(&[("lib.rs", src.as_str())], limits);
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("module depth limit")),
+            "expected a depth diagnostic: {:?}",
+            parsed.diagnostics
+        );
+        assert!(
+            !module_paths(&parsed).iter().any(|p| p.len() > 4),
+            "modules beyond the limit must be skipped: {:?}",
+            module_paths(&parsed)
+        );
     }
 
     #[test]

@@ -14,7 +14,9 @@ pub struct Limits {
     /// a diagnostic. Default: 4 MiB (far above any hand-written Rust file;
     /// large generated files should be reviewed with a dedicated process).
     pub max_file_bytes: u64,
-    /// Maximum number of files parsed per crate. Default: 20 000.
+    /// Maximum number of module files read per crate. Every attempted file
+    /// counts — even unreadable, oversized or unparseable ones — so
+    /// malformed files cannot evade the limit. Default: 20 000.
     pub max_files_per_crate: usize,
     /// Maximum module nesting depth. Cycles are also caught by canonical
     /// path tracking; this catches non-file cycles such as inline modules.
