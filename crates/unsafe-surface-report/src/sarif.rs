@@ -1,17 +1,19 @@
 //! SARIF 2.1.0 rendering.
 //!
-//! Maps findings to SARIF results so they can be consumed by GitHub code
-//! scanning and compatible systems. Rules are the [`UnsafeOpKind`] values;
-//! result locations point at the operation's source location. Confidence
-//! and reachability are carried as result properties.
+//! Maps the report model onto SARIF results for GitHub code scanning and
+//! compatible systems. Rules are the [`UnsafeOpKind`] values and result
+//! locations point at the operation's source location; columns are
+//! Unicode code points, declared via `run.columnKind`.
 //!
-//! Only *reachable* findings and structural findings become results:
-//! unreachable code is informational inventory, not an alert. Unresolved
-//! calls are emitted as a single aggregated `unresolved-calls` result per
-//! crate when present, since code scanning needs actionable locations.
+//! Every finding becomes a result: reachable ones at their confidence
+//! level, unreachable ones as `note`-level results (inventory, not
+//! alerts). Structural findings and diagnostics are included as well,
+//! and unresolved calls are emitted as a single aggregated
+//! `unresolved-calls` result when present, since code scanning needs
+//! actionable locations.
 
 use serde::Serialize;
-use unsafe_surface_core::{Confidence, Reachability, ReportModel, UnsafeOpKind};
+use unsafe_surface_core::{Confidence, Reachability, ReportModel, Severity, UnsafeOpKind};
 
 use crate::ReportError;
 
@@ -38,7 +40,37 @@ struct SarifLog {
 #[serde(rename_all = "camelCase")]
 struct Run {
     tool: Tool,
+    column_kind: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    invocations: Vec<Invocation>,
     results: Vec<Result_>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    properties: Option<RunProperties>,
+}
+
+/// One tool invocation, carrying the analysis diagnostics.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Invocation {
+    execution_successful: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_execution_notifications: Vec<Notification>,
+}
+
+/// A diagnostic reported during the invocation.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Notification {
+    level: &'static str,
+    message: Message,
+}
+
+/// Run-level property bag for values SARIF has no dedicated slot for.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RunProperties {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    analysis_limitations: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -112,9 +144,13 @@ struct Region {
 struct Properties {
     confidence: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    justification: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     package: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finding_id: Option<u64>,
 }
 
 /// All rule kinds (stable ids in snake_case, matching the JSON schema).
@@ -160,21 +196,39 @@ fn build_log(report: &ReportModel) -> SarifLog {
 
     let mut results = Vec::new();
     for finding in &report.findings {
-        if finding.reachability != Reachability::Reachable {
-            continue;
-        }
         let op = &finding.operation;
+        let reachable = finding.reachability == Reachability::Reachable;
+        let mut text = format!(
+            "{} {} in {} ({})",
+            if reachable {
+                "reachable"
+            } else {
+                "unreachable"
+            },
+            op.kind.label(),
+            finding.enclosing_item,
+            finding.package
+        );
+        if let Some(detail) = &op.detail {
+            let label = match op.kind {
+                UnsafeOpKind::FfiCall | UnsafeOpKind::UnsafeFnCall => "target",
+                _ => "detail",
+            };
+            text.push_str(&format!(", {label}: {detail}"));
+        }
+        text.push_str(&format!(" — justification: {}", op.justification.label()));
+        if !reachable {
+            text.push_str(" — present but not reachable from the entry points");
+        }
         results.push(Result_ {
             rule_id: rule_id(op.kind),
-            level: level(op.confidence),
-            message: Message {
-                text: format!(
-                    "reachable {} in {} ({})",
-                    op.kind.label(),
-                    finding.enclosing_item,
-                    finding.package
-                ),
+            level: if reachable {
+                level(op.confidence)
+            } else {
+                // Unreachable code is inventory, not an alert.
+                "note"
             },
+            message: Message { text },
             locations: vec![location(
                 &op.location.file,
                 op.location.line,
@@ -182,11 +236,13 @@ fn build_log(report: &ReportModel) -> SarifLog {
             )],
             properties: Properties {
                 confidence: confidence(op.confidence),
+                justification: Some(op.justification.label()),
                 package: Some(finding.package.to_string()),
                 path: finding
                     .path
                     .as_ref()
                     .map(|steps| steps.iter().map(|s| s.item.to_string()).collect()),
+                finding_id: Some(finding.id),
             },
         });
     }
@@ -204,8 +260,10 @@ fn build_log(report: &ReportModel) -> SarifLog {
             )],
             properties: Properties {
                 confidence: "confirmed",
+                justification: Some(finding.justification.label()),
                 package: Some(finding.package.to_string()),
                 path: None,
+                finding_id: None,
             },
         });
     }
@@ -237,11 +295,35 @@ fn build_log(report: &ReportModel) -> SarifLog {
             locations,
             properties: Properties {
                 confidence: "inferred",
+                justification: None,
                 package: None,
                 path: None,
+                finding_id: None,
             },
         });
     }
+
+    let invocations = if report.diagnostics.is_empty() {
+        Vec::new()
+    } else {
+        vec![Invocation {
+            execution_successful: true,
+            tool_execution_notifications: report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| Notification {
+                    level: match diagnostic.severity {
+                        Severity::Info => "note",
+                        Severity::Warning => "warning",
+                        Severity::Error => "error",
+                    },
+                    message: Message {
+                        text: diagnostic.message.clone(),
+                    },
+                })
+                .collect(),
+        }]
+    };
 
     SarifLog {
         schema: "https://json.schemastore.org/sarif-2.1.0.json",
@@ -255,7 +337,12 @@ fn build_log(report: &ReportModel) -> SarifLog {
                     rules,
                 },
             },
+            column_kind: "unicodeCodePoints",
+            invocations,
             results,
+            properties: (!report.limitations.is_empty()).then(|| RunProperties {
+                analysis_limitations: report.limitations.clone(),
+            }),
         }],
     }
 }
@@ -285,7 +372,7 @@ fn location(file: &str, line: u32, column: u32) -> Location {
     Location {
         physical_location: PhysicalLocation {
             artifact_location: ArtifactLocation {
-                uri: file.replace('\\', "/"),
+                uri: artifact_uri(file),
             },
             region: Region {
                 start_line: line,
@@ -293,4 +380,45 @@ fn location(file: &str, line: u32, column: u32) -> Location {
             },
         },
     }
+}
+
+/// Percent-encodes a path into a valid SARIF `artifactLocation.uri`
+/// (RFC 3986): separators are normalized to `/`, characters outside the
+/// unreserved set are encoded, and absolute paths get a `file:` scheme so
+/// a Windows drive letter or UNC host cannot be read as a URI scheme.
+fn artifact_uri(file: &str) -> String {
+    let path = file.replace('\\', "/");
+    let mut uri = String::new();
+    let rest = if let Some(rest) = path.strip_prefix("//") {
+        // UNC path: `//server/share/…` → `file://server/share/…`.
+        uri.push_str("file://");
+        rest
+    } else if let Some(rest) = path.strip_prefix('/') {
+        // Absolute POSIX path: `/home/…` → `file:///home/…`.
+        uri.push_str("file:///");
+        rest
+    } else if path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && path.as_bytes().get(1) == Some(&b':')
+    {
+        // Windows drive letter: `C:/…` → `file:///C:/…`, keeping the
+        // drive literal so `C:` cannot read as a URI scheme.
+        uri.push_str("file:///");
+        uri.push_str(&path[..2]);
+        &path[2..]
+    } else {
+        path.as_str()
+    };
+    for (index, segment) in rest.split('/').enumerate() {
+        if index > 0 {
+            uri.push('/');
+        }
+        for byte in segment.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                uri.push(byte as char);
+            } else {
+                uri.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    uri
 }

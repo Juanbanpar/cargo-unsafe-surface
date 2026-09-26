@@ -183,14 +183,16 @@ fn sarif_output_is_valid_2_1_0() {
     assert_eq!(value["version"], "2.1.0");
     let run = &value["runs"][0];
     assert_eq!(run["tool"]["driver"]["name"], "cargo-unsafe-surface");
+    // Columns are Unicode code points, matching the model's units.
+    assert_eq!(run["columnKind"], "unicodeCodePoints");
     // Rules cover all op kinds plus the aggregated unresolved entry.
     let rules = run["tool"]["driver"]["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 19);
     assert!(rules.iter().any(|r| r["id"] == "ffi_call"));
-    // Results: 2 reachable findings + 1 structural + aggregated unresolved
-    // (the unreachable finding must NOT alert).
+    // Results: 2 reachable findings + 1 unreachable (as a note, not an
+    // alert) + 1 structural + aggregated unresolved.
     let results = run["results"].as_array().unwrap();
-    assert_eq!(results.len(), 4);
+    assert_eq!(results.len(), 5);
     let ffi = results
         .iter()
         .find(|r| r["ruleId"] == "ffi_call")
@@ -205,9 +207,68 @@ fn sarif_output_is_valid_2_1_0() {
         "ffiwrap/src/lib.rs"
     );
     assert_eq!(ffi["properties"]["confidence"], "confirmed");
+    assert_eq!(ffi["properties"]["justification"], "present");
+    assert_eq!(ffi["properties"]["findingId"], 1);
+    assert!(ffi["message"]["text"].as_str().unwrap().contains("target:"));
     assert_eq!(ffi["properties"]["path"][0], "server::main");
     assert!(results.iter().any(|r| r["ruleId"] == "unresolved-calls"));
     assert!(results.iter().any(|r| r["ruleId"] == "send_impl"));
+    // The unreachable finding is present but must not alert.
+    let unreachable = results
+        .iter()
+        .find(|r| {
+            r["message"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("unreachable")
+        })
+        .expect("unreachable findings must be reported");
+    assert_eq!(unreachable["level"], "note");
+}
+
+#[test]
+fn sarif_carries_diagnostics_and_limitations() {
+    let sarif = render(&sample_report(), OutputFormat::Sarif).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&sarif).unwrap();
+    let run = &value["runs"][0];
+    let notifications = run["invocations"][0]["toolExecutionNotifications"]
+        .as_array()
+        .expect("diagnostics must be reported as notifications");
+    assert_eq!(
+        notifications[0]["message"]["text"],
+        "something is incomplete"
+    );
+    assert_eq!(notifications[0]["level"], "warning");
+    assert!(
+        run["properties"]["analysisLimitations"]
+            .as_array()
+            .is_some_and(|limitations| !limitations.is_empty()),
+        "analysis limitations must be carried: {run}"
+    );
+}
+
+#[test]
+fn sarif_percent_encodes_artifact_uris() {
+    let mut report = sample_report();
+    report.findings[0].operation.location.file = "weird dir/a#b.rs".into();
+    report.findings[1].operation.location.file = "C:\\src\\x.rs".into();
+    let sarif = render(&report, OutputFormat::Sarif).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&sarif).unwrap();
+    let results = value["runs"][0]["results"].as_array().unwrap();
+    let uri = |needle: &str| -> String {
+        results
+            .iter()
+            .map(|r| r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].clone())
+            .find(|uri| uri.as_str().unwrap_or_default().contains(needle))
+            .unwrap_or_else(|| panic!("no result for {needle}"))
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    // Spaces and fragments must be encoded; drive letters must not look
+    // like a URI scheme.
+    assert_eq!(uri("weird"), "weird%20dir/a%23b.rs");
+    assert_eq!(uri("file:///C:"), "file:///C:/src/x.rs");
 }
 
 #[test]
