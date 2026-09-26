@@ -31,7 +31,12 @@ pub fn render_text(report: &ReportModel) -> String {
 fn header(out: &mut String, report: &ReportModel) {
     let _ = writeln!(out, "Unsafe Surface Report");
     let _ = writeln!(out);
-    let _ = writeln!(out, "Tool: {} {}", report.tool.name, report.tool.version);
+    let _ = writeln!(
+        out,
+        "Tool: {} {}",
+        sanitize(&report.tool.name),
+        sanitize(&report.tool.version)
+    );
     let _ = writeln!(out, "Schema version: {}", report.schema_version);
     let _ = writeln!(out);
     let _ = writeln!(out, "Entry points:");
@@ -189,7 +194,7 @@ fn structural_section(out: &mut String, report: &ReportModel) {
             "  [{}] {} {} — {} ({}) — justification: {}",
             finding.kind.label(),
             sanitize(&finding.package.name),
-            finding.package.version.as_deref().unwrap_or("<unknown>"),
+            sanitize(finding.package.version.as_deref().unwrap_or("<unknown>")),
             sanitize(&finding.detail),
             sanitize(&finding.location.to_string()),
             finding.justification.label()
@@ -246,7 +251,7 @@ fn diagnostics_section(out: &mut String, report: &ReportModel) {
 fn limitations_section(out: &mut String, report: &ReportModel) {
     let _ = writeln!(out, "Analysis limitations:");
     for limitation in &report.limitations {
-        let _ = writeln!(out, "  - {limitation}");
+        let _ = writeln!(out, "  - {}", sanitize(limitation));
     }
 }
 
