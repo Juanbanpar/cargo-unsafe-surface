@@ -48,7 +48,7 @@ target}` or `{kind: "explicit"}`.
   "id": 0,
   "operation": {
     "kind": "ffi_call",
-    "location": {"file": "ffiwrap/src/lib.rs", "line": 10, "column": 18},
+    "location": {"file": "ffiwrap/src/lib.rs", "line": 10, "column": 14},
     "confidence": "confirmed",
     "justification": "present",
     "detail": "ffiwrap::socket"
@@ -59,7 +59,10 @@ target}` or `{kind: "explicit"}`.
   "path": [
     {"item": {"krate": "server", "segments": ["main"]},
      "call_site": {"file": "server/src/main.rs", "line": 10, "column": 5},
-     "edge_confidence": "confirmed"}
+     "edge_confidence": "confirmed"},
+    {"item": {"krate": "ffiwrap", "segments": ["create_socket"]},
+     "call_site": null,
+     "edge_confidence": null}
   ]
 }
 ```
