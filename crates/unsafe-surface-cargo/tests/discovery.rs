@@ -167,6 +167,30 @@ fn unknown_bin_target_is_an_error() {
 }
 
 #[test]
+fn bin_target_names_filter_across_packages() {
+    // `--bin app` matches the one selected package that provides it; the
+    // other selected packages simply do not match (Cargo semantics).
+    let dir = make_workspace();
+    let ws = discover(&options(dir.path()), false, false).unwrap();
+    let targets = ws.select_targets(false, &["app".to_owned()]).unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].name, "app");
+    assert_eq!(targets[0].kind, TargetKind::Bin);
+}
+
+#[test]
+fn empty_explicit_selection_is_not_a_package_error() {
+    // Packages *were* selected; it is the target request that matched
+    // nothing, so the error must not claim otherwise.
+    let dir = make_workspace();
+    let mut opts = options(dir.path());
+    opts.packages = vec!["app".to_owned()]; // binary-only package
+    let ws = discover(&opts, false, false).unwrap();
+    let err = ws.select_targets(true, &[]).unwrap_err();
+    assert!(matches!(err, CargoError::NoTargets), "got: {err:?}");
+}
+
+#[test]
 fn dependency_closure_includes_normal_deps_only_by_default() {
     let dir = make_workspace();
     let mut opts = options(dir.path());

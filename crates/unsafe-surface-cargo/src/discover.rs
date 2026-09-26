@@ -116,19 +116,24 @@ impl DiscoveredWorkspace {
     /// Resolves the bin/lib target selection against the selected packages.
     ///
     /// * With explicit `lib`/`bins`, exactly those targets are returned.
+    ///   Target names filter across the selected packages (Cargo
+    ///   semantics): a `--bin` name matches wherever it exists and is an
+    ///   error only when no selected package provides it.
     /// * By default all binary targets of the selected packages are used;
     ///   if none exist, all library targets are used instead.
     ///
     /// # Errors
     ///
-    /// Returns [`CargoError::TargetNotFound`] for unknown `--bin` names and
-    /// [`CargoError::NoPackages`] when the selection is empty.
+    /// Returns [`CargoError::TargetNotFound`] for `--bin` names no selected
+    /// package provides, and [`CargoError::NoTargets`] when an explicit
+    /// selection matches nothing at all.
     pub fn select_targets(
         &self,
         lib: bool,
         bins: &[String],
     ) -> Result<Vec<SelectedTarget>, CargoError> {
         let mut targets = Vec::new();
+        let mut unmatched_bins: Vec<&String> = bins.iter().collect();
         for package in &self.packages {
             if !self.selected.contains(&package.id) {
                 continue;
@@ -144,23 +149,25 @@ impl DiscoveredWorkspace {
                     });
                 }
             }
-            for bin in bins {
-                match package.bin_targets.iter().find(|(name, _)| name == bin) {
-                    Some((name, root)) => targets.push(SelectedTarget {
-                        package: package.id.clone(),
-                        name: name.clone(),
-                        kind: TargetKind::Bin,
-                        root: root.clone(),
-                        edition: package.edition.clone(),
-                    }),
-                    None => {
-                        return Err(CargoError::TargetNotFound {
-                            name: bin.clone(),
-                            kind: TargetKind::Bin.label(),
-                        });
-                    }
+            for (name, root) in &package.bin_targets {
+                if !unmatched_bins.contains(&name) {
+                    continue;
                 }
+                targets.push(SelectedTarget {
+                    package: package.id.clone(),
+                    name: name.clone(),
+                    kind: TargetKind::Bin,
+                    root: root.clone(),
+                    edition: package.edition.clone(),
+                });
+                unmatched_bins.retain(|bin| *bin != name);
             }
+        }
+        if let Some(name) = unmatched_bins.first() {
+            return Err(CargoError::TargetNotFound {
+                name: (*name).clone(),
+                kind: TargetKind::Bin.label(),
+            });
         }
         if !lib && bins.is_empty() {
             // Default selection: all bins; fall back to all libs.
@@ -197,7 +204,9 @@ impl DiscoveredWorkspace {
         }
         targets.sort_by(|a, b| (&a.package.name, &a.name).cmp(&(&b.package.name, &b.name)));
         if targets.is_empty() {
-            return Err(CargoError::NoPackages);
+            // The packages themselves were selected; the requested target
+            // kinds are what did not match.
+            return Err(CargoError::NoTargets);
         }
         Ok(targets)
     }
