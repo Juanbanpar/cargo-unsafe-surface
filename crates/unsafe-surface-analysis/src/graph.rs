@@ -61,7 +61,8 @@ pub struct GraphNode {
     pub kind: FunctionKind,
     /// Whether the item is `pub`.
     pub is_pub: bool,
-    /// Whether this is an `unsafe fn` (foreign functions count).
+    /// Whether calling this item requires `unsafe` (`unsafe fn`, or a
+    /// foreign function without a `safe fn` declaration).
     pub is_unsafe_fn: bool,
     /// Definition location.
     pub location: SourceLocation,

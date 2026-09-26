@@ -31,7 +31,7 @@ use unsafe_surface_core::{
     UnsafeOpKind, UnsafeOperation,
 };
 
-use crate::index::{CrateIndex, ModuleImports};
+use crate::index::{foreign_fn_decl, CrateIndex, ModuleImports};
 use crate::justify::find_justification;
 use crate::source::ParsedCrate;
 
@@ -223,25 +223,27 @@ fn classify_item(
                 ),
             });
             for foreign_item in &foreign_mod.items {
-                if let syn::ForeignItem::Fn(foreign_fn) = foreign_item {
-                    let name = foreign_fn.sig.ident.to_string();
-                    let location = location_of(module, foreign_fn.sig.ident.span());
+                if let Some(decl) = foreign_fn_decl(foreign_item) {
+                    let name = &decl.name;
+                    let location = location_of(module, decl.span);
                     analysis.structural.push(StructuralFinding {
                         kind: UnsafeOpKind::ForeignFunction,
                         package: package.clone(),
                         location: location.clone(),
-                        detail: format!("extern \"{abi}\" fn {name}"),
-                        justification: find_justification(
-                            &module.text,
-                            start_line(foreign_fn.sig.ident.span()),
+                        detail: format!(
+                            "{}extern \"{abi}\" fn {name}",
+                            if decl.safe_to_call { "safe " } else { "" }
                         ),
+                        justification: find_justification(&module.text, start_line(decl.span)),
                     });
                     analysis.functions.push(FunctionRecord {
-                        path: joined(&module.path, &name),
+                        path: joined(&module.path, name),
                         module: module.path.clone(),
                         kind: FunctionKind::Extern,
-                        is_pub: is_pub(&foreign_fn.vis),
-                        is_unsafe_fn: true, // calling a foreign fn is always unsafe
+                        is_pub: decl.is_pub,
+                        // Calling a foreign fn requires `unsafe` unless the
+                        // declaration says `safe fn` (edition 2024).
+                        is_unsafe_fn: !decl.safe_to_call,
                         location,
                         ops: Vec::new(),
                         calls: Vec::new(),

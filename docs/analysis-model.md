@@ -94,7 +94,7 @@ unresolved calls feed `fail_on_unresolved_calls` /
 | --- | --- | --- |
 | `unsafe {}` block | syntax | confirmed |
 | `unsafe fn` / calls to it | syntax / resolved callee | confirmed (direct) / inferred (method) |
-| FFI calls | resolved callee declared in `extern` block | confirmed |
+| FFI calls | resolved callee declared in `extern` block without `safe fn` | confirmed |
 | raw pointer deref | dereference expr in unsafe context | inferred |
 | `transmute` | call path ending in `transmute`/`transmute_copy` | confirmed |
 | inline assembly | `asm!`/`global_asm!`/`naked_asm!` macro | confirmed |

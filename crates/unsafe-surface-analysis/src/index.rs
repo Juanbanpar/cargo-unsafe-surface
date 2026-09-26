@@ -222,14 +222,14 @@ fn index_item(index: &mut CrateIndex, module: &[String], item: &Item) {
         }
         Item::ForeignMod(foreign_mod) => {
             for foreign_item in &foreign_mod.items {
-                if let syn::ForeignItem::Fn(foreign_fn) = foreign_item {
-                    let path = joined(module, &foreign_fn.sig.ident.to_string());
+                if let Some(decl) = foreign_fn_decl(foreign_item) {
+                    let path = joined(module, &decl.name);
                     insert(
                         index,
                         path.clone(),
                         IndexItem {
                             kind: IndexItemKind::ExternFn,
-                            is_pub: is_pub(&foreign_fn.vis),
+                            is_pub: decl.is_pub,
                         },
                     );
                     index.extern_fns.insert(path);
@@ -397,6 +397,57 @@ fn insert(index: &mut CrateIndex, path: Vec<String>, item: IndexItem) {
 
 fn is_pub(vis: &Visibility) -> bool {
     matches!(vis, Visibility::Public(_))
+}
+
+/// A foreign function declaration.
+///
+/// Syn 2 keeps the edition-2024 `safe fn` form of `unsafe extern` blocks
+/// as [`syn::ForeignItem::Verbatim`]; both forms are recognized here.
+#[derive(Debug)]
+pub(crate) struct ForeignFnDecl {
+    /// Function name.
+    pub name: String,
+    /// Whether the declaration carries `safe` — it is then safe to call.
+    pub safe_to_call: bool,
+    /// Whether the declaration is `pub`.
+    pub is_pub: bool,
+    /// Span of the function name.
+    pub span: proc_macro2::Span,
+}
+
+/// Extracts a foreign function declaration from a foreign item.
+pub(crate) fn foreign_fn_decl(item: &syn::ForeignItem) -> Option<ForeignFnDecl> {
+    match item {
+        syn::ForeignItem::Fn(foreign_fn) => Some(ForeignFnDecl {
+            name: foreign_fn.sig.ident.to_string(),
+            safe_to_call: false,
+            is_pub: is_pub(&foreign_fn.vis),
+            span: foreign_fn.sig.ident.span(),
+        }),
+        syn::ForeignItem::Verbatim(tokens) => safe_foreign_fn(tokens),
+        _ => None,
+    }
+}
+
+/// Parses `safe fn name(...);` from the verbatim token stream syn 2
+/// cannot represent structurally.
+fn safe_foreign_fn(tokens: &proc_macro2::TokenStream) -> Option<ForeignFnDecl> {
+    let mut trees = tokens.clone().into_iter();
+    let proc_macro2::TokenTree::Ident(keyword) = trees.next()? else {
+        return None;
+    };
+    if keyword != "safe" {
+        return None;
+    }
+    let syn::ForeignItem::Fn(foreign_fn) = syn::parse2(trees.collect()).ok()? else {
+        return None;
+    };
+    Some(ForeignFnDecl {
+        name: foreign_fn.sig.ident.to_string(),
+        safe_to_call: true,
+        is_pub: is_pub(&foreign_fn.vis),
+        span: foreign_fn.sig.ident.span(),
+    })
 }
 
 #[cfg(test)]

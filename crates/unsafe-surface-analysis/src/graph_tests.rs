@@ -517,6 +517,67 @@ impl W {
 }
 
 #[test]
+fn safe_foreign_functions_are_not_unsafe_calls() {
+    // Edition 2024: `safe fn` inside `unsafe extern` is audited and safe
+    // to call. Syn 2 keeps the form verbatim; it must still be indexed,
+    // and its calls must not be unsafe operations.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "safeffi",
+        &[(
+            "lib.rs",
+            r#"
+unsafe extern "C" {
+    safe fn audited(x: i32) -> i32;
+    fn risky(x: i32) -> i32;
+}
+
+pub fn call_both() {
+    let _ = audited(1);
+    let _ = risky(2);
+}
+"#,
+        )],
+    );
+    let safeffi = analyze_crate("safeffi", &root, dir.path());
+    // The declaration is inventoried, marked as the `safe` form.
+    assert!(
+        safeffi
+            .analysis
+            .structural
+            .iter()
+            .any(|s| s.detail == "safe extern \"C\" fn audited"),
+        "safe declaration must be inventoried: {:?}",
+        safeffi.analysis.structural
+    );
+    let inputs = [CrateInput {
+        package: &safeffi.package,
+        is_lib: true,
+        parsed: &safeffi.parsed,
+        index: &safeffi.index,
+        analysis: &safeffi.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    // Both declarations resolve as callees…
+    let audited = graph
+        .node(&ItemPath::parse("safeffi::audited").unwrap())
+        .expect("safe fn must be indexed");
+    assert!(!graph.nodes[audited as usize].is_unsafe_fn);
+    // …but only the unsafe declaration attaches an FFI op to the caller.
+    let caller = graph
+        .node(&ItemPath::parse("safeffi::call_both").unwrap())
+        .unwrap();
+    let ffi: Vec<_> = graph.nodes[caller as usize]
+        .ops
+        .iter()
+        .filter(|op| op.kind == UnsafeOpKind::FfiCall)
+        .collect();
+    assert_eq!(ffi.len(), 1, "only the unsafe declaration: {ffi:?}");
+    assert_eq!(ffi[0].detail.as_deref(), Some("safeffi::risky"));
+}
+
+#[test]
 fn self_calls_resolved_by_the_heuristic_are_inferred() {
     // `self.step()` where `step` is not defined on the `Self` type: the
     // `Self`-type search misses and the unique-name heuristic matches
