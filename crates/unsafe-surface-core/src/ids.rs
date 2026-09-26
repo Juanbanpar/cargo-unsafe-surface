@@ -66,8 +66,8 @@ pub enum DependencyOrigin {
     Unknown,
 }
 
-/// A source position. Lines are 1-based, columns are 1-based (converted from
-/// `proc-macro2`'s 0-based columns at parse time).
+/// A source position. Lines are 1-based; columns are 1-based Unicode code
+/// points (`proc-macro2`'s 0-based columns count characters).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourceLocation {
     /// Display path of the file. Relative to the analysed workspace root
@@ -75,7 +75,8 @@ pub struct SourceLocation {
     pub file: String,
     /// 1-based line number.
     pub line: u32,
-    /// 1-based column number.
+    /// 1-based column number, in Unicode code points — the unit SARIF's
+    /// `unicodeCodePoints` column kind declares.
     pub column: u32,
 }
 

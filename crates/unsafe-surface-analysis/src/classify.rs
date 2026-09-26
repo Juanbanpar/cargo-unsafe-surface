@@ -946,6 +946,24 @@ mod tests {
     }
 
     #[test]
+    fn locations_count_unicode_code_points() {
+        // Proc-macro2 columns are 0-based character offsets. The emoji
+        // before `unsafe` is one code point but two UTF-16 units: `unsafe`
+        // sits at character 18 of the line below (0-based), reported as
+        // the 1-based column 19.
+        let (analysis, _dir) = analyze(&[(
+            "lib.rs",
+            "fn f(p: *const i32) {\n    let _ = (\"😀\", unsafe { *p });\n}\n",
+        )]);
+        let block = function(&analysis, "f")
+            .ops
+            .iter()
+            .find(|op| op.kind == UnsafeOpKind::UnsafeBlock)
+            .expect("unsafe block");
+        assert_eq!((block.location.line, block.location.column), (2, 19));
+    }
+
+    #[test]
     fn detects_transmute_unchecked_maybeuninit() {
         let (analysis, _dir) = analyze(&[(
             "lib.rs",
