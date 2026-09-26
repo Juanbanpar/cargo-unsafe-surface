@@ -34,7 +34,7 @@ cargo doc --workspace --all-features --no-deps   # RUSTDOCFLAGS=-Dwarnings in CI
 
 Optional but configured: `cargo deny check` (licences/advisories),
 `cargo llvm-cov` (coverage), `cargo bench -p unsafe-surface-analysis`
-(graph benchmarks), `cargo machete` (unused deps).
+(graph benchmarks).
 
 ## Toolchain notes
 
@@ -64,16 +64,9 @@ Optional but configured: `cargo deny check` (licences/advisories),
 `.github/workflows/ci.yml` (required for PRs): fmt, clippy `-D warnings`,
 tests on stable + MSRV (1.85.0), docs, release build, all on Linux.
 
-`.github/workflows/advisory.yml` (weekly/manual): `cargo deny`,
-coverage via `cargo-llvm-cov`, macOS/Windows builds, nightly tests.
-Advisory failures are reviewed during maintenance; they never gate PRs.
-
-**Action pinning**: actions that check out code are pinned to immutable
-commit hashes. Tooling actions (`dtolnay/rust-toolchain`,
-`swatinem/rust-cache`, `taiki-e/install-action`) are pinned to tags
-because their moving tool inputs have no stable per-release hashes; this
-trade-off is documented inline in the workflows. Dependabot keeps both
- ecosystems updated.
+`.github/workflows/advisory.yml` (weekly/manual): `cargo deny`, coverage,
+macOS/Windows builds. Advisory failures are reviewed during maintenance;
+they never gate PRs.
 
 ## Adding a new unsafe-op kind
 
