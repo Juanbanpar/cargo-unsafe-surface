@@ -247,6 +247,21 @@ fn bad_manifest_path_is_an_operational_error() {
 }
 
 #[test]
+fn usage_errors_exit_with_code_1() {
+    // A parse failure must not be mistaken for a policy violation (2).
+    let (code, _stdout, stderr) = run(&["--polciy", "x"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("--polciy"), "stderr: {stderr}");
+}
+
+#[test]
+fn help_exits_with_code_0() {
+    let (code, stdout, stderr) = run(&["--help"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("--format"), "stdout: {stdout}");
+}
+
+#[test]
 fn output_file_is_written() {
     let dir = tempfile::tempdir().unwrap();
     let output = dir.path().join("report.json");

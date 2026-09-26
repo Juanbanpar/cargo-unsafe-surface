@@ -23,7 +23,16 @@ use unsafe_surface_report::{render, OutputFormat};
 use crate::args::{Cli, ExitCodes};
 
 fn main() -> ExitCode {
-    let cli = Cli::parse_from_cargo();
+    let cli = match Cli::parse_from_cargo() {
+        Ok(cli) => cli,
+        Err(error) => {
+            // Clap streams help and version to stdout and errors to
+            // stderr; its exit code would collide with ours (see
+            // `ExitCodes::for_parse_error`).
+            error.print().ok();
+            return ExitCodes::for_parse_error(&error).exit_code();
+        }
+    };
     match run(cli) {
         Ok(code) => code.exit_code(),
         Err(error) => {
