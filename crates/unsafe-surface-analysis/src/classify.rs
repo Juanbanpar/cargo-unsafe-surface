@@ -34,7 +34,10 @@ use unsafe_surface_core::{
     UnresolvedReason, UnsafeOpKind, UnsafeOperation,
 };
 
-use crate::index::{foreign_fn_decl, CrateIndex, ModuleImports};
+use crate::index::{
+    flatten_use_tree, foreign_fn_decl, is_pub, joined, path_segments, type_path_segments,
+    CrateIndex, ModuleImports,
+};
 use crate::justify::find_justification;
 use crate::source::ParsedCrate;
 
@@ -495,15 +498,6 @@ impl FnBodyVisitor<'_> {
             .with_justification(find_justification(&self.module.text, start_line(span)))
     }
 
-    fn path_segments(expr_path: &syn::ExprPath) -> Vec<String> {
-        expr_path
-            .path
-            .segments
-            .iter()
-            .map(|s| s.ident.to_string())
-            .collect()
-    }
-
     fn last_segment_is(segments: &[String], names: &[&str]) -> bool {
         segments
             .last()
@@ -529,7 +523,7 @@ impl Visit<'_> for FnBodyVisitor<'_> {
             other => other,
         };
         if let Expr::Path(expr_path) = func {
-            let segments = Self::path_segments(expr_path);
+            let segments = path_segments(&expr_path.path);
             if Self::last_segment_is(&segments, &["transmute", "transmute_copy"]) {
                 let op = self.op(UnsafeOpKind::Transmute, expr_path.path.span());
                 self.record.ops.push(op.with_detail(segments.join("::")));
@@ -645,7 +639,7 @@ impl Visit<'_> for FnBodyVisitor<'_> {
     }
 
     fn visit_expr_path(&mut self, node: &syn::ExprPath) {
-        let segments = Self::path_segments(node);
+        let segments = path_segments(&node.path);
         if let Some(last) = segments.last() {
             // Mutable static access: matched by last segment against the
             // crate's known `static mut` items (cross-module approximation,
@@ -706,39 +700,6 @@ impl Visit<'_> for FnBodyVisitor<'_> {
     }
 }
 
-/// Re-export of the use-tree flattener shared with the index builder.
-fn flatten_use_tree(tree: &syn::UseTree, prefix: Vec<String>, imports: &mut ModuleImports) {
-    match tree {
-        syn::UseTree::Path(path) => {
-            let mut prefix = prefix;
-            prefix.push(path.ident.to_string());
-            flatten_use_tree(&path.tree, prefix, imports);
-        }
-        syn::UseTree::Name(name) => {
-            if name.ident == "self" {
-                if let Some(last) = prefix.last() {
-                    imports.exact.insert(last.clone(), prefix);
-                }
-            } else {
-                let mut target = prefix;
-                target.push(name.ident.to_string());
-                imports.exact.insert(name.ident.to_string(), target);
-            }
-        }
-        syn::UseTree::Rename(rename) => {
-            let mut target = prefix;
-            target.push(rename.ident.to_string());
-            imports.exact.insert(rename.rename.to_string(), target);
-        }
-        syn::UseTree::Glob(_) => imports.globs.push(prefix),
-        syn::UseTree::Group(group) => {
-            for tree in &group.items {
-                flatten_use_tree(tree, prefix.clone(), imports);
-            }
-        }
-    }
-}
-
 /// Whether a type is (possibly behind references/pointers/parens) a trait
 /// object.
 fn is_trait_object(ty: &syn::Type) -> bool {
@@ -794,28 +755,12 @@ fn collect_pat_idents(pat: &syn::Pat, out: &mut BTreeSet<String>) {
     }
 }
 
-fn type_path_segments(ty: &syn::Type) -> Vec<String> {
-    match ty {
-        syn::Type::Path(type_path) if type_path.qself.is_none() => type_path
-            .path
-            .segments
-            .iter()
-            .map(|s| s.ident.to_string())
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
 fn type_path_string(ty: &syn::Type) -> String {
     type_path_segments(ty).join("::")
 }
 
 fn path_string(path: &syn::Path) -> String {
-    path.segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect::<Vec<_>>()
-        .join("::")
+    path_segments(path).join("::")
 }
 
 /// Symbolic description of a computed callee for reports (source text is
@@ -843,16 +788,6 @@ fn is_inline_assembly_macro(path: &syn::Path) -> bool {
         last.ident.to_string().as_str(),
         "asm" | "global_asm" | "naked_asm"
     )
-}
-
-fn joined(module: &[String], name: &str) -> Vec<String> {
-    let mut path = module.to_vec();
-    path.push(name.to_owned());
-    path
-}
-
-fn is_pub(vis: &syn::Visibility) -> bool {
-    matches!(vis, syn::Visibility::Public(_))
 }
 
 /// 1-based start line of a span.

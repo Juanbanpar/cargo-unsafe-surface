@@ -332,7 +332,12 @@ fn index_impl(index: &mut CrateIndex, module: &[String], item_impl: &syn::ItemIm
 ///
 /// `use a::b::{self, c as d, e::*}` yields exact imports `b` and `d`, and
 /// one glob source `a::b::e`.
-fn flatten_use_tree(tree: &syn::UseTree, prefix: Vec<String>, imports: &mut ModuleImports) {
+/// Flattens a `use` tree into the exact and glob imports it declares.
+pub(crate) fn flatten_use_tree(
+    tree: &syn::UseTree,
+    prefix: Vec<String>,
+    imports: &mut ModuleImports,
+) {
     match tree {
         syn::UseTree::Path(path) => {
             let mut prefix = prefix;
@@ -368,7 +373,7 @@ fn flatten_use_tree(tree: &syn::UseTree, prefix: Vec<String>, imports: &mut Modu
 }
 
 /// Path segments of a `syn::Path` (`a::b::C`), without generic arguments.
-fn path_segments(path: &syn::Path) -> Vec<String> {
+pub(crate) fn path_segments(path: &syn::Path) -> Vec<String> {
     path.segments
         .iter()
         .map(|segment| segment.ident.to_string())
@@ -376,14 +381,15 @@ fn path_segments(path: &syn::Path) -> Vec<String> {
 }
 
 /// Path segments of a type when it is a plain path type; empty otherwise.
-fn type_path_segments(ty: &syn::Type) -> Vec<String> {
+pub(crate) fn type_path_segments(ty: &syn::Type) -> Vec<String> {
     match ty {
         syn::Type::Path(type_path) if type_path.qself.is_none() => path_segments(&type_path.path),
         _ => Vec::new(),
     }
 }
 
-fn joined(module: &[String], name: &str) -> Vec<String> {
+/// Item path of `name` inside `module`.
+pub(crate) fn joined(module: &[String], name: &str) -> Vec<String> {
     let mut path = module.to_vec();
     path.push(name.to_owned());
     path
@@ -395,7 +401,7 @@ fn insert(index: &mut CrateIndex, path: Vec<String>, item: IndexItem) {
     index.items.entry(path).or_insert(item);
 }
 
-fn is_pub(vis: &Visibility) -> bool {
+pub(crate) fn is_pub(vis: &Visibility) -> bool {
     matches!(vis, Visibility::Public(_))
 }
 
