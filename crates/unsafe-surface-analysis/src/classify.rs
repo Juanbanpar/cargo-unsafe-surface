@@ -641,14 +641,15 @@ impl Visit<'_> for FnBodyVisitor<'_> {
     }
 
     fn visit_item(&mut self, node: &Item) {
-        // `use` declarations inside bodies feed the resolution scope…
-        if let Item::Use(item_use) = node {
-            self.visit_item_use(item_use);
+        match node {
+            // `use` declarations inside bodies feed the resolution scope…
+            Item::Use(item_use) => self.visit_item_use(item_use),
+            // …while other items nested inside function bodies (inner
+            // fns, impls, …) are not modelled as separate graph nodes;
+            // their calls and unsafe operations are conservatively
+            // attributed to the enclosing function (see the limitations).
+            item => syn::visit::visit_item(self, item),
         }
-        // …but other items nested inside function bodies (inner fns,
-        // impls, …) are not modelled as separate graph nodes in this
-        // version; their calls are conservatively attributed to the
-        // enclosing function. Recorded in the analysis limitations.
     }
 }
 
@@ -905,6 +906,37 @@ mod tests {
             .find(|op| op.kind == UnsafeOpKind::InlineAssembly)
             .expect("asm! not detected");
         assert_eq!(asm.detail.as_deref(), Some("core::arch::asm"));
+    }
+
+    #[test]
+    fn nested_items_are_attributed_to_the_enclosing_function() {
+        let (analysis, _dir) = analyze(&[(
+            "lib.rs",
+            "fn outer() {\n\
+             \x20   fn inner(p: *const i32) -> i32 {\n\
+             \x20       unsafe { *p }\n\
+             \x20   }\n\
+             \x20   let _ = inner(0 as *const i32);\n\
+             }\n",
+        )]);
+        let outer = function(&analysis, "outer");
+        assert!(
+            outer
+                .ops
+                .iter()
+                .any(|op| op.kind == UnsafeOpKind::UnsafeBlock),
+            "unsafe block inside a nested fn must be attributed to `outer`: {:?}",
+            outer.ops
+        );
+        assert!(
+            outer.calls.iter().any(|call| matches!(
+                &call.callee,
+                CalleeRef::Path { segments }
+                    if segments.last().map(String::as_str) == Some("inner")
+            )),
+            "call inside a nested fn must be attributed to `outer`: {:?}",
+            outer.calls
+        );
     }
 
     #[test]
