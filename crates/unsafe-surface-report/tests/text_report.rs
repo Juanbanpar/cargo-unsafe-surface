@@ -211,6 +211,30 @@ fn sarif_output_is_valid_2_1_0() {
 }
 
 #[test]
+fn sarif_aggregates_unresolved_calls_without_listed_sites() {
+    // The listed sites are capped independently of the total (see
+    // `ReportModel::unresolved_calls`); rendering must neither panic nor
+    // drop the aggregate when the cap hides every site.
+    let mut report = sample_report();
+    report.unresolved_calls_total = 5;
+    report.unresolved_calls.clear();
+    let sarif = render(&report, OutputFormat::Sarif).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&sarif).unwrap();
+    let results = value["runs"][0]["results"].as_array().unwrap();
+    let aggregate = results
+        .iter()
+        .find(|r| r["ruleId"] == "unresolved-calls")
+        .expect("aggregated unresolved result must still be reported");
+    assert!(
+        aggregate.get("locations").is_none(),
+        "no location is expected without listed sites: {aggregate}"
+    );
+    assert!(aggregate["message"]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("5 call site(s)")));
+}
+
+#[test]
 fn control_characters_are_sanitized() {
     let mut report = sample_report();
     report.findings[0].operation.detail = Some("\u{1b}[31mEVIL\u{1b}[0m".into());

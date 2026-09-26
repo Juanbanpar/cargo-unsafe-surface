@@ -76,6 +76,7 @@ struct Result_ {
     rule_id: String,
     level: &'static str,
     message: Message,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     locations: Vec<Location>,
     properties: Properties,
 }
@@ -210,7 +211,20 @@ fn build_log(report: &ReportModel) -> SarifLog {
     }
     if report.unresolved_calls_total > 0 {
         // Aggregate uncertainty as one result at the first unresolved site.
-        let first = &report.unresolved_calls[0];
+        // The listed sites are capped independently of the total, so the
+        // list can be empty (see `ReportModel::unresolved_calls`); the
+        // aggregate result is then reported without a location.
+        let locations = report
+            .unresolved_calls
+            .first()
+            .map(|first| {
+                vec![location(
+                    &first.location.file,
+                    first.location.line,
+                    first.location.column,
+                )]
+            })
+            .unwrap_or_default();
         results.push(Result_ {
             rule_id: "unresolved-calls".to_owned(),
             level: "note",
@@ -220,11 +234,7 @@ fn build_log(report: &ReportModel) -> SarifLog {
                     report.unresolved_calls_total
                 ),
             },
-            locations: vec![location(
-                &first.location.file,
-                first.location.line,
-                first.location.column,
-            )],
+            locations,
             properties: Properties {
                 confidence: "inferred",
                 package: None,
