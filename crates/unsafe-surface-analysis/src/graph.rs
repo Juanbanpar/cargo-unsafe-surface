@@ -263,7 +263,7 @@ pub fn build_call_graph(
                             }
                         }
                     }
-                    Resolution::Callable(callee_instance, target) => {
+                    Resolution::Callable(callee_instance, target, edge_kind) => {
                         let Some(&callee_id) =
                             graph.index.get(&(callee_instance, target.segments.clone()))
                         else {
@@ -279,13 +279,6 @@ pub fn build_call_graph(
                                 reason: UnresolvedReason::UnknownName,
                             });
                             continue;
-                        };
-                        let edge_kind = match &call.callee {
-                            CalleeRef::Method {
-                                receiver_is_self: false,
-                                ..
-                            } => EdgeKind::InferredMethod,
-                            _ => EdgeKind::Direct,
                         };
                         // First edge to a callee wins; call-site iteration
                         // is deterministic.

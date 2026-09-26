@@ -471,6 +471,49 @@ impl W {
 }
 
 #[test]
+fn self_calls_resolved_by_the_heuristic_are_inferred() {
+    // `self.step()` where `step` is not defined on the `Self` type: the
+    // `Self`-type search misses and the unique-name heuristic matches
+    // `B::step`, so the edge must be inferred, not direct.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "solo",
+        &[(
+            "lib.rs",
+            r#"
+struct A;
+impl A {
+    fn run(&self) { self.step(); }
+}
+struct B;
+impl B {
+    fn step(&self) {}
+}
+"#,
+        )],
+    );
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    let run_id = graph
+        .node(&ItemPath::parse("solo::A::run").unwrap())
+        .unwrap();
+    let step_id = graph
+        .node(&ItemPath::parse("solo::B::step").unwrap())
+        .unwrap();
+    let edge = &graph.edges[run_id as usize][&step_id];
+    assert_eq!(edge.kind, unsafe_surface_core::EdgeKind::InferredMethod);
+    assert_eq!(edge.kind.confidence(), Confidence::Inferred);
+}
+
+#[test]
 fn graph_construction_is_deterministic() {
     let (a, _dir_a) = scenario();
     let (b, _dir_b) = scenario();

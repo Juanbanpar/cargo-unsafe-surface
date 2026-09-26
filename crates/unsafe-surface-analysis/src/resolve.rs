@@ -17,10 +17,11 @@
 //!   existing callable item wins — a deliberate approximation of Rust's
 //!   scoping rules that is exact in the overwhelmingly common cases.
 //! * **Method calls** on `self` resolve against the enclosing impl's
-//!   `Self` type. Other method calls use the *unique-name heuristic*: if
-//!   exactly one analysed impl defines a method with that name, the edge
-//!   is added with `EdgeKind::InferredMethod`; with several candidates the
-//!   call is reported as ambiguous; with none, as unknown.
+//!   `Self` type. Method calls the `Self`-type search cannot place — and
+//!   all other method calls — use the *unique-name heuristic*: if exactly
+//!   one analysed impl defines a method with that name, the edge is added
+//!   with `EdgeKind::InferredMethod`; with several candidates the call is
+//!   reported as ambiguous; with none, as unknown.
 //!
 //! Everything that does not resolve is an explicit
 //! [`unsafe_surface_core::UnresolvedCall`] with a machine-readable
@@ -29,7 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use unsafe_surface_core::{ItemPath, UnresolvedReason};
+use unsafe_surface_core::{EdgeKind, ItemPath, UnresolvedReason};
 
 use crate::classify::FunctionRecord;
 use crate::index::{CrateIndex, IndexItemKind};
@@ -195,8 +196,11 @@ pub const MAX_MAY_CALL_CANDIDATES: usize = 8;
 /// The resolution of one call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
-    /// Resolved to a callable item `(instance, item path)`.
-    Callable(InstanceId, ItemPath),
+    /// Resolved to a callable item `(instance, item path)`. The edge kind
+    /// records how resolution happened: [`EdgeKind::Direct`] for exact
+    /// path and `Self`-type matches, [`EdgeKind::InferredMethod`] for the
+    /// unique-name method heuristic.
+    Callable(InstanceId, ItemPath, EdgeKind),
     /// Resolved to a small set of plausible callees (may-call
     /// over-approximation; all edges are marked inferred).
     MayCall(Vec<(InstanceId, ItemPath)>),
@@ -332,6 +336,7 @@ pub fn resolve_method_call(
                     return Resolution::Callable(
                         *instance,
                         ItemPath::new(global.instance_name(*instance), path.clone()),
+                        EdgeKind::Direct,
                     );
                 }
                 n if n > 1 => {
@@ -342,7 +347,9 @@ pub fn resolve_method_call(
         }
     }
 
-    // Unique-name heuristic across all analysed instances.
+    // Unique-name heuristic across all analysed instances: the match is
+    // by name only, so its edges are inferred even for `self` receivers
+    // that fell through the `Self`-type search above.
     let candidates = global.methods_named(name);
     match candidates.len() {
         1 => {
@@ -350,6 +357,7 @@ pub fn resolve_method_call(
             Resolution::Callable(
                 *instance,
                 ItemPath::new(global.instance_name(*instance), (*path).to_vec()),
+                EdgeKind::InferredMethod,
             )
         }
         0 => Resolution::Unresolved(UnresolvedReason::UnknownName),
@@ -444,6 +452,7 @@ fn existing_callable(
         return Some(Resolution::Callable(
             instance,
             ItemPath::new(global.instance_name(instance), path.to_vec()),
+            EdgeKind::Direct,
         ));
     }
     if global.item_kind(instance, path).is_some() {
