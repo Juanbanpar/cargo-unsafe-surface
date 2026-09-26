@@ -226,6 +226,11 @@ pub fn resolve_path_call(
     }
     let caller_index = global.instance_index(caller_instance);
 
+    // `Self::…` has several candidate positions (see `resolve_self_call`).
+    if segments[0] == "Self" {
+        return resolve_self_call(global, caller, caller_instance, &segments[1..]);
+    }
+
     // Normalize leading keywords into instance-relative paths.
     let normalized: Option<Vec<String>> = match segments[0].as_str() {
         "crate" => Some(segments[1..].to_vec()),
@@ -238,10 +243,6 @@ pub fn resolve_path_call(
             let base_len = caller.module.len().saturating_sub(ups);
             Some([&caller.module[..base_len], &segments[ups..]].concat())
         }
-        "Self" => caller
-            .impl_self_ty
-            .as_ref()
-            .map(|self_ty| [caller.module.as_slice(), self_ty.as_slice(), &segments[1..]].concat()),
         _ => None,
     };
     if let Some(path) = normalized {
@@ -308,6 +309,45 @@ pub fn resolve_path_call(
             || caller.fn_pointer_locals.iter().any(|p| p == first))
     {
         return Resolution::Unresolved(UnresolvedReason::FunctionPointer);
+    }
+    Resolution::Unresolved(UnresolvedReason::UnknownName)
+}
+
+/// Resolves the remainder of a `Self::…` path from `caller`.
+///
+/// `Self::x` is looked up in three positions, in order:
+///
+/// * beside the calling method — a record's path is
+///   `…::SelfType[::Trait]::method`, so its prefix holds the impl block's
+///   own items, trait-provided ones included;
+/// * the inherent `…::SelfType::x` position;
+/// * the trait's default position `…::Trait::x`, for methods of a trait
+///   impl (the trait segment is what the impl path adds beyond the module
+///   and the `Self` type).
+fn resolve_self_call(
+    global: &GlobalIndex<'_>,
+    caller: &FunctionRecord,
+    caller_instance: InstanceId,
+    rest: &[String],
+) -> Resolution {
+    let Some(self_ty) = &caller.impl_self_ty else {
+        return Resolution::Unresolved(UnresolvedReason::UnknownName);
+    };
+    let method = caller.path.len().saturating_sub(1);
+    let self_end = caller.module.len() + self_ty.len();
+    // The trait segment of a trait impl, `[]` otherwise.
+    let extra = caller.path.get(self_end..method).unwrap_or(&[]);
+    let inherent = [caller.module.as_slice(), self_ty.as_slice()].concat();
+    let mut bases = vec![caller.path[..method].to_vec(), inherent];
+    if !extra.is_empty() {
+        bases.push([caller.module.as_slice(), extra].concat());
+    }
+    bases.dedup();
+    for base in &bases {
+        let candidate = [base.as_slice(), rest].concat();
+        if let Some(resolution) = existing_callable(global, caller_instance, &candidate) {
+            return resolution;
+        }
     }
     Resolution::Unresolved(UnresolvedReason::UnknownName)
 }

@@ -256,6 +256,53 @@ pub fn call() {
 }
 
 #[test]
+fn self_paths_cover_trait_provided_items() {
+    // `Self::x` inside `impl T for X` must find both items of the impl
+    // block (`…::X::T::x`) and the trait's default implementations
+    // (`…::T::x`), not just inherent `…::X::x`.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "solo",
+        &[(
+            "lib.rs",
+            r#"
+trait T {
+    fn provided() {}
+    fn run();
+}
+struct X;
+impl T for X {
+    fn run() {
+        Self::from_the_impl();
+        Self::provided();
+    }
+    fn from_the_impl() {}
+}
+"#,
+        )],
+    );
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    let callees = callee_paths(&graph, "solo::X::T::run");
+    assert!(
+        callees.contains(&"solo::X::T::from_the_impl".to_owned()),
+        "impl items must resolve beside the method: {callees:?}"
+    );
+    assert!(
+        callees.contains(&"solo::T::provided".to_owned()),
+        "trait defaults must resolve through the trait segment: {callees:?}"
+    );
+}
+
+#[test]
 fn binary_paths_resolve_to_their_library() {
     // `pkg::helper()` inside the binary must resolve to the library's
     // `helper` (extern-crate semantics), not to the binary's own.
