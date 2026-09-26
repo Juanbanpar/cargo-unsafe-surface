@@ -113,11 +113,7 @@ impl<'a> GlobalIndex<'a> {
     /// The kind of an item inside one instance.
     #[must_use]
     pub fn item_kind(&self, instance: InstanceId, path: &[String]) -> Option<IndexItemKind> {
-        self.instances[instance]
-            .index
-            .items
-            .get(path)
-            .map(|item| item.kind)
+        self.instances[instance].index.items.get(path).copied()
     }
 
     /// Whether the item is callable (a graph node target).
@@ -126,9 +122,9 @@ impl<'a> GlobalIndex<'a> {
         matches!(
             self.item_kind(instance, path),
             Some(
-                IndexItemKind::Fn { .. }
-                    | IndexItemKind::Method { .. }
-                    | IndexItemKind::TraitMethod { .. }
+                IndexItemKind::Fn
+                    | IndexItemKind::Method
+                    | IndexItemKind::TraitMethod
                     | IndexItemKind::ExternFn
             )
         )
