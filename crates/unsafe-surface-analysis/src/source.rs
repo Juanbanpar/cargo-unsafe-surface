@@ -284,14 +284,11 @@ impl Walker<'_, '_> {
         depth: usize,
     ) -> Vec<Item> {
         let mut kept = Vec::new();
-        for item in items {
-            let cfg_result = self.context.cfg.evaluate_attrs(attrs_of(&item));
-            if !cfg_result.keeps_item() {
+        for mut item in items {
+            if !self.cfg_keeps(attrs_of(&item)) {
                 continue;
             }
-            if cfg_result == CfgResult::Unknown {
-                self.unknown_cfg_items += 1;
-            }
+            self.filter_sub_items(&mut item);
 
             if let Item::Mod(item_mod) = &item {
                 self.handle_mod(item_mod, module_path, mod_context, current, depth);
@@ -299,6 +296,40 @@ impl Walker<'_, '_> {
             kept.push(item);
         }
         kept
+    }
+
+    /// Whether the `#[cfg]` gates of an item allow it, accounting for the
+    /// over-approximation of unknown predicates.
+    fn cfg_keeps(&mut self, attrs: &[syn::Attribute]) -> bool {
+        let result = self.context.cfg.evaluate_attrs(attrs);
+        if result == CfgResult::Unknown {
+            self.unknown_cfg_items += 1;
+        }
+        result.keeps_item()
+    }
+
+    /// Drops `#[cfg]`-disabled sub-items: impl methods, trait items and
+    /// foreign items are gated individually in real code, just like
+    /// module-level items.
+    fn filter_sub_items(&mut self, item: &mut Item) {
+        match item {
+            Item::Impl(item_impl) => {
+                item_impl
+                    .items
+                    .retain(|sub| self.cfg_keeps(impl_item_attrs(sub)));
+            }
+            Item::Trait(item_trait) => {
+                item_trait
+                    .items
+                    .retain(|sub| self.cfg_keeps(trait_item_attrs(sub)));
+            }
+            Item::ForeignMod(foreign_mod) => {
+                foreign_mod
+                    .items
+                    .retain(|sub| self.cfg_keeps(foreign_item_attrs(sub)));
+            }
+            _ => {}
+        }
     }
 
     fn handle_mod(
@@ -420,6 +451,39 @@ fn attrs_of(item: &Item) -> &[syn::Attribute] {
     }
 }
 
+/// Attributes of an impl item (empty for kinds that cannot carry `cfg`).
+fn impl_item_attrs(item: &syn::ImplItem) -> &[syn::Attribute] {
+    match item {
+        syn::ImplItem::Const(i) => &i.attrs,
+        syn::ImplItem::Fn(i) => &i.attrs,
+        syn::ImplItem::Type(i) => &i.attrs,
+        syn::ImplItem::Macro(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+/// Attributes of a trait item (empty for kinds that cannot carry `cfg`).
+fn trait_item_attrs(item: &syn::TraitItem) -> &[syn::Attribute] {
+    match item {
+        syn::TraitItem::Const(i) => &i.attrs,
+        syn::TraitItem::Fn(i) => &i.attrs,
+        syn::TraitItem::Type(i) => &i.attrs,
+        syn::TraitItem::Macro(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+/// Attributes of a foreign item (empty for kinds that cannot carry `cfg`).
+fn foreign_item_attrs(item: &syn::ForeignItem) -> &[syn::Attribute] {
+    match item {
+        syn::ForeignItem::Fn(i) => &i.attrs,
+        syn::ForeignItem::Static(i) => &i.attrs,
+        syn::ForeignItem::Type(i) => &i.attrs,
+        syn::ForeignItem::Macro(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
 /// Display path relative to `root` when possible, with forward slashes.
 fn display_path(file: &Path, root: Option<&Path>) -> String {
     match root.and_then(|root| file.strip_prefix(root).ok()) {
@@ -530,6 +594,50 @@ mod tests {
         let paths = module_paths(&parsed);
         assert!(!paths.contains(&vec!["gone".to_string()]));
         assert!(paths.contains(&vec!["kept".to_string()]));
+    }
+
+    #[test]
+    fn cfg_disabled_sub_items_are_dropped() {
+        // Methods, trait items and foreign items carry their own `#[cfg]`
+        // gates and must be filtered like module-level items.
+        let (parsed, _dir) = parse(&[(
+            "lib.rs",
+            "struct S;\n\
+             impl S {\n\
+             \x20   #[cfg(any())]\n\
+             \x20   fn gone(&self) {}\n\
+             \x20   fn kept(&self) {}\n\
+             }\n\
+             trait T {\n\
+             \x20   #[cfg(any())]\n\
+             \x20   fn gone();\n\
+             \x20   fn kept();\n\
+             }\n\
+             extern \"C\" {\n\
+             \x20   #[cfg(any())]\n\
+             \x20   fn gone();\n\
+             \x20   fn kept();\n\
+             }\n",
+        )]);
+        let root = parsed
+            .modules
+            .iter()
+            .find(|m| m.path.is_empty())
+            .expect("root module");
+        let mut kept_counts = Vec::new();
+        for item in &root.items {
+            match item {
+                Item::Impl(i) => kept_counts.push(i.items.len()),
+                Item::Trait(i) => kept_counts.push(i.items.len()),
+                Item::ForeignMod(i) => kept_counts.push(i.items.len()),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            kept_counts,
+            [1, 1, 1],
+            "each container must keep only its cfg-enabled item"
+        );
     }
 
     #[test]
