@@ -267,17 +267,14 @@ pub fn resolve_path_call(
         }
     }
 
-    // 3. Glob imports.
+    // 3. Glob imports. Targets get the same root handling as exact
+    //    imports (`crate`/`self`/`super` stay in the instance).
     for imports in import_sets.into_iter().flatten() {
         for glob in &imports.globs {
-            if let Some(base) = normalize_import_target(&caller.module, glob) {
-                let candidate = [base.as_slice(), segments].concat();
-                if let Some(resolution) = existing_callable(global, caller_instance, &candidate) {
-                    return resolution;
-                }
-                if let Some(resolution) = probe_by_name(global, caller_instance, &candidate) {
-                    return resolution;
-                }
+            if let Some(resolution) =
+                resolve_imported(global, caller, caller_instance, glob, segments)
+            {
+                return resolution;
             }
         }
     }

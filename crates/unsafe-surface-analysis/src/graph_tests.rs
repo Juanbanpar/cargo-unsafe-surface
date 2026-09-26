@@ -217,6 +217,43 @@ fn resolves_direct_and_imported_calls() {
 }
 
 #[test]
+fn crate_rooted_glob_imports_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "globber",
+        &[(
+            "lib.rs",
+            r#"
+mod prelude {
+    pub fn exposed() {}
+}
+
+use crate::prelude::*;
+
+pub fn call() {
+    exposed();
+}
+"#,
+        )],
+    );
+    let globber = analyze_crate("globber", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &globber.package,
+        is_lib: true,
+        parsed: &globber.parsed,
+        index: &globber.index,
+        analysis: &globber.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    let callees = callee_paths(&graph, "globber::call");
+    assert!(
+        callees.contains(&"globber::prelude::exposed".to_owned()),
+        "glob-imported item must resolve via `use crate::…::*`; edges: {callees:?}"
+    );
+}
+
+#[test]
 fn unsafe_and_ffi_calls_attach_ops_to_caller() {
     let (graph, _dir) = scenario();
     let main_id = graph.node(&ItemPath::parse("app::main").unwrap()).unwrap();
