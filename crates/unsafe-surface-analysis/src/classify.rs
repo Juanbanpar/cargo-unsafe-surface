@@ -12,9 +12,12 @@
 //!   because dereferencing a raw pointer requires an unsafe context while
 //!   dereferencing a reference does not — but references may still be
 //!   dereferenced inside one.
-//! * **Union field access**: tracked through explicit type annotations on
-//!   parameters and `let` bindings of the same function ([`Confidence::
-//!   Confirmed`] when the annotation names a known union). Untracked
+//! * **Union field access**: field reads are tracked through explicit
+//!   type annotations on parameters and `let` bindings of the same
+//!   function, following references and pointers ([`Confidence::
+//!   Confirmed`] when the annotation names a known union). Like raw
+//!   derefs, reads are only reported inside unsafe contexts, and
+//!   assignment targets — writes, which are safe — are not. Untracked
 //!   aliases are missed; this is recorded in the limitations.
 //!
 //! Resolution-dependent operations (calls to `unsafe fn`, FFI calls) are
@@ -409,8 +412,8 @@ fn function_record(
             _ => None,
         })
         .flat_map(|pat| {
-            let mut names = Vec::new();
-            collect_pat_idents_vec(pat, &mut names);
+            let mut names = BTreeSet::new();
+            collect_pat_idents(pat, &mut names);
             names
         })
         .collect();
@@ -422,8 +425,8 @@ fn function_record(
             _ => None,
         })
         .flat_map(|pat| {
-            let mut names = Vec::new();
-            collect_pat_idents_vec(pat, &mut names);
+            let mut names = BTreeSet::new();
+            collect_pat_idents(pat, &mut names);
             names
         })
         .collect();
@@ -435,6 +438,7 @@ fn function_record(
         module,
         record: &mut record,
         unsafe_depth: usize::from(is_unsafe_fn),
+        write_depth: 0,
         union_locals: BTreeSet::new(),
     };
     visitor.collect_signature_bindings(sig);
@@ -450,6 +454,9 @@ struct FnBodyVisitor<'a> {
     /// Nesting depth of unsafe contexts (`unsafe {}` blocks; starts at 1
     /// for `unsafe fn` bodies).
     unsafe_depth: usize,
+    /// Nesting depth of assignment targets (`u.a = value` writes a union
+    /// field, which is safe; only reads require `unsafe`).
+    write_depth: usize,
     /// Local variable names with explicitly annotated union types.
     union_locals: BTreeSet<String>,
 }
@@ -465,7 +472,7 @@ impl FnBodyVisitor<'_> {
     }
 
     fn bind_if_union(&mut self, pat: &syn::Pat, ty: &syn::Type) {
-        let is_union = type_path_segments(ty)
+        let is_union = type_path_segments(unwrapped_type(ty))
             .last()
             .map(|last| self.index.unions.contains(last))
             .unwrap_or(false);
@@ -569,15 +576,28 @@ impl Visit<'_> for FnBodyVisitor<'_> {
     }
 
     fn visit_expr_field(&mut self, node: &syn::ExprField) {
-        if let Expr::Path(base) = &*node.base {
-            if let Some(ident) = base.path.get_ident() {
-                if self.union_locals.contains(&ident.to_string()) {
-                    let op = self.op(UnsafeOpKind::UnionFieldAccess, node.member.span());
-                    self.record.ops.push(op);
+        // Union field reads require `unsafe`, so — like raw derefs — they
+        // are only reported inside unsafe contexts. Assignment targets
+        // are writes, which are safe (see `visit_expr_assign`).
+        if self.unsafe_depth > 0 && self.write_depth == 0 {
+            if let Expr::Path(base) = &*node.base {
+                if let Some(ident) = base.path.get_ident() {
+                    if self.union_locals.contains(&ident.to_string()) {
+                        let op = self.op(UnsafeOpKind::UnionFieldAccess, node.member.span());
+                        self.record.ops.push(op);
+                    }
                 }
             }
         }
         syn::visit::visit_expr_field(self, node);
+    }
+
+    fn visit_expr_assign(&mut self, node: &syn::ExprAssign) {
+        // The assignment target is written, not read.
+        self.write_depth += 1;
+        self.visit_expr(&node.left);
+        self.write_depth -= 1;
+        self.visit_expr(&node.right);
     }
 
     fn visit_macro(&mut self, node: &syn::Macro) {
@@ -627,8 +647,8 @@ impl Visit<'_> for FnBodyVisitor<'_> {
         if let syn::Pat::Type(pat_type) = &node.pat {
             self.bind_if_union(&pat_type.pat, &pat_type.ty);
             if matches!(&*pat_type.ty, syn::Type::BareFn(_)) {
-                let mut names = Vec::new();
-                collect_pat_idents_vec(&pat_type.pat, &mut names);
+                let mut names = BTreeSet::new();
+                collect_pat_idents(&pat_type.pat, &mut names);
                 self.record.fn_pointer_locals.extend(names);
             }
         }
@@ -688,30 +708,24 @@ fn flatten_use_tree(tree: &syn::UseTree, prefix: Vec<String>, imports: &mut Modu
     }
 }
 
-/// Whether a type is (possibly behind references/parens) a trait object.
+/// Whether a type is (possibly behind references/pointers/parens) a trait
+/// object.
 fn is_trait_object(ty: &syn::Type) -> bool {
+    matches!(unwrapped_type(ty), syn::Type::TraitObject(_))
+}
+
+/// The type behind references, raw pointers, parens and groups.
+fn unwrapped_type(ty: &syn::Type) -> &syn::Type {
     match ty {
-        syn::Type::TraitObject(_) => true,
-        syn::Type::Reference(reference) => is_trait_object(&reference.elem),
-        syn::Type::Paren(paren) => is_trait_object(&paren.elem),
-        syn::Type::Group(group) => is_trait_object(&group.elem),
-        _ => false,
+        syn::Type::Reference(reference) => unwrapped_type(&reference.elem),
+        syn::Type::Ptr(ptr) => unwrapped_type(&ptr.elem),
+        syn::Type::Paren(paren) => unwrapped_type(&paren.elem),
+        syn::Type::Group(group) => unwrapped_type(&group.elem),
+        _ => ty,
     }
 }
 
-fn collect_pat_idents_vec(pat: &syn::Pat, out: &mut Vec<String>) {
-    match pat {
-        syn::Pat::Ident(ident) => out.push(ident.ident.to_string()),
-        syn::Pat::Tuple(tuple) => {
-            for elem in &tuple.elems {
-                collect_pat_idents_vec(elem, out);
-            }
-        }
-        syn::Pat::Reference(reference) => collect_pat_idents_vec(&reference.pat, out),
-        _ => {}
-    }
-}
-
+/// Collects the identifiers bound by a pattern.
 fn collect_pat_idents(pat: &syn::Pat, out: &mut BTreeSet<String>) {
     match pat {
         syn::Pat::Ident(ident) => {
@@ -722,12 +736,29 @@ fn collect_pat_idents(pat: &syn::Pat, out: &mut BTreeSet<String>) {
                 collect_pat_idents(elem, out);
             }
         }
+        syn::Pat::TupleStruct(tuple_struct) => {
+            for elem in &tuple_struct.elems {
+                collect_pat_idents(elem, out);
+            }
+        }
         syn::Pat::Struct(strukt) => {
             for field in &strukt.fields {
                 collect_pat_idents(&field.pat, out);
             }
         }
+        syn::Pat::Slice(slice) => {
+            for elem in &slice.elems {
+                collect_pat_idents(elem, out);
+            }
+        }
+        syn::Pat::Or(or) => {
+            for case in &or.cases {
+                collect_pat_idents(case, out);
+            }
+        }
         syn::Pat::Reference(reference) => collect_pat_idents(&reference.pat, out),
+        syn::Pat::Paren(paren) => collect_pat_idents(&paren.pat, out),
+        syn::Pat::Type(pat_type) => collect_pat_idents(&pat_type.pat, out),
         _ => {}
     }
 }
@@ -1009,6 +1040,48 @@ mod tests {
             .unwrap();
         assert_eq!(access.confidence, Confidence::Confirmed);
         assert!(op_kinds(function(&analysis, "g")).contains(&UnsafeOpKind::UnionFieldAccess));
+    }
+
+    #[test]
+    fn union_annotations_behind_references_are_tracked() {
+        let (analysis, _dir) = analyze(&[(
+            "lib.rs",
+            "union U { a: u32, b: f32 }\n\
+             fn f(u: &U) -> u32 { unsafe { u.a } }\n",
+        )]);
+        assert!(op_kinds(function(&analysis, "f")).contains(&UnsafeOpKind::UnionFieldAccess));
+    }
+
+    #[test]
+    fn union_writes_are_not_reported() {
+        // Only reads require `unsafe`; `u.a = value` is a safe write and
+        // is not a union read — even inside an unsafe block.
+        let (analysis, _dir) = analyze(&[(
+            "lib.rs",
+            "union U { a: u32, b: f32 }\n\
+             fn write(u: &mut U) { u.a = 1; }\n\
+             fn write_in_unsafe(u: &mut U) { unsafe { u.a = 2; } }\n\
+             fn read_in_unsafe(u: U) -> u32 { unsafe { u.a } }\n",
+        )]);
+        for name in ["write", "write_in_unsafe"] {
+            let kinds = op_kinds(function(&analysis, name));
+            assert!(
+                !kinds.contains(&UnsafeOpKind::UnionFieldAccess),
+                "{name} writes a union field: {kinds:?}"
+            );
+        }
+        assert!(op_kinds(function(&analysis, "read_in_unsafe"))
+            .contains(&UnsafeOpKind::UnionFieldAccess));
+    }
+
+    #[test]
+    fn destructured_parameters_are_tracked() {
+        let (analysis, _dir) = analyze(&[(
+            "lib.rs",
+            "struct S { cb: fn() }\n\
+             fn f(S { cb, .. }: S) {\n    cb();\n}\n",
+        )]);
+        assert_eq!(function(&analysis, "f").params, ["cb"]);
     }
 
     #[test]
