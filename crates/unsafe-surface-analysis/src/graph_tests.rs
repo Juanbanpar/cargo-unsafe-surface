@@ -364,6 +364,50 @@ pub fn f(a: A) { a.collide(); }
 }
 
 #[test]
+fn may_call_candidates_without_nodes_stay_unresolved() {
+    // Both candidates are trait declarations without bodies: neither is
+    // a graph node, and the call must surface as uncertainty instead of
+    // vanishing.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "solo",
+        &[(
+            "lib.rs",
+            r#"
+trait T {
+    fn collide(&self);
+}
+trait U {
+    fn collide(&self);
+}
+struct X;
+fn caller(x: X) {
+    x.collide();
+}
+"#,
+        )],
+    );
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    assert!(
+        callee_paths(&graph, "solo::caller").is_empty(),
+        "no candidate is representable as an edge"
+    );
+    assert_eq!(
+        unresolved_reasons(&graph, "<receiver>.collide"),
+        vec![UnresolvedReason::AmbiguousMethod { candidates: 2 }]
+    );
+}
+
+#[test]
 fn large_ambiguity_sets_stay_unresolved() {
     let dir = tempfile::tempdir().unwrap();
     // Ten types with a method named `collide` exceed the may-call cap.

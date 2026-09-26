@@ -241,6 +241,8 @@ pub fn build_call_graph(
                 };
                 match resolution {
                     Resolution::MayCall(candidates) => {
+                        let candidate_count = candidates.len();
+                        let mut linked = 0;
                         for (callee_instance, target) in candidates {
                             if let Some(&callee_id) =
                                 graph.index.get(&(callee_instance, target.segments.clone()))
@@ -260,7 +262,25 @@ pub fn build_call_graph(
                                     input,
                                     &record.module,
                                 );
+                                linked += 1;
                             }
+                        }
+                        if linked == 0 {
+                            // No candidate is representable as a node
+                            // (trait method declarations without bodies,
+                            // a truncated graph): the call must surface
+                            // as uncertainty instead of vanishing.
+                            graph.unresolved.push(UnresolvedCall {
+                                caller: ItemPath::new(
+                                    input.package.crate_name(),
+                                    record.path.clone(),
+                                ),
+                                callee_text: callee_text(&call.callee),
+                                location: call.location.clone(),
+                                reason: UnresolvedReason::AmbiguousMethod {
+                                    candidates: candidate_count,
+                                },
+                            });
                         }
                     }
                     Resolution::Callable(callee_instance, target, edge_kind) => {
