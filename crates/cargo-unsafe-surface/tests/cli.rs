@@ -150,6 +150,25 @@ fn explicit_entry_point_is_used() {
 }
 
 #[test]
+fn crate_prefixed_entry_point_is_resolved() {
+    // The documented `crate::path::func` form matches the item path in
+    // every analysed instance.
+    let mut args = base_args();
+    args.extend([
+        "--include-dependencies".into(),
+        "--entry".into(),
+        "crate::as_int".into(),
+    ]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, stdout, stderr) = run(&args);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("  netlib::as_int"));
+    // The entry drives reachability: the union access is now reachable.
+    assert!(stdout.contains("Kind:          union field access"));
+    assert!(!stdout.contains("was not found"), "stdout: {stdout}");
+}
+
+#[test]
 fn lib_target_selects_public_api() {
     let manifest = fixture_manifest();
     let args = [

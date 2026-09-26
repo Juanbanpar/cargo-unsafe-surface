@@ -283,22 +283,31 @@ fn resolve_entries(
     }
 
     for raw in &config.explicit_entries {
-        match ItemPath::parse(raw) {
-            Ok(path) => match graph.node(&path) {
-                Some(id) => {
-                    entry_points.push(EntryPoint {
-                        item: graph.nodes[id as usize].path.clone(),
-                        kind: EntryPointKind::Explicit,
-                    });
-                    nodes.push(id);
-                }
-                None => diagnostics.push(Diagnostic::warning(format!(
-                    "entry point `{raw}` was not found in the analysed sources"
-                ))),
-            },
-            Err(error) => diagnostics.push(Diagnostic::error(format!(
-                "invalid entry point `{raw}`: {error}"
-            ))),
+        let ids = match ItemPath::parse(raw) {
+            // `crate::…` names no crate of its own: match the item path
+            // against every analysed crate instance (see
+            // docs/analysis-model.md, "Entry-point selection").
+            Ok(path) if path.krate == "crate" => graph.nodes_matching(&path.segments),
+            Ok(path) => graph.node(&path).into_iter().collect(),
+            Err(error) => {
+                diagnostics.push(Diagnostic::error(format!(
+                    "invalid entry point `{raw}`: {error}"
+                )));
+                continue;
+            }
+        };
+        if ids.is_empty() {
+            diagnostics.push(Diagnostic::warning(format!(
+                "entry point `{raw}` was not found in the analysed sources"
+            )));
+            continue;
+        }
+        for id in ids {
+            entry_points.push(EntryPoint {
+                item: graph.nodes[id as usize].path.clone(),
+                kind: EntryPointKind::Explicit,
+            });
+            nodes.push(id);
         }
     }
 

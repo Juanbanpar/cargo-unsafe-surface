@@ -118,6 +118,18 @@ impl CallGraph {
         self.index.get(&(instance, path.to_vec())).copied()
     }
 
+    /// Node lookup for item paths that name no crate (`crate::…` entry
+    /// paths): every instance is searched, in instance order (libraries
+    /// first), returning one node per instance that defines the item.
+    #[must_use]
+    pub fn nodes_matching(&self, segments: &[String]) -> Vec<NodeId> {
+        self.index
+            .iter()
+            .filter(|((_, path), _)| path.as_slice() == segments)
+            .map(|(_, &id)| id)
+            .collect()
+    }
+
     /// Number of edges in the graph.
     #[must_use]
     pub fn edge_count(&self) -> usize {
