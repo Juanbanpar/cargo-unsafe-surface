@@ -95,7 +95,15 @@ fn findings_section(out: &mut String, report: &ReportModel) {
         .iter()
         .filter(|f| f.reachability == Reachability::Reachable)
         .collect();
-    let _ = writeln!(out, "Findings (reachable): {}", reachable.len());
+    let _ = writeln!(
+        out,
+        "{}",
+        count_line(
+            "Findings (reachable)",
+            report.summary.reachable_unsafe_operations,
+            reachable.len()
+        )
+    );
     let _ = writeln!(out);
     for (index, finding) in reachable.iter().enumerate() {
         let op = &finding.operation;
@@ -139,7 +147,6 @@ fn findings_section(out: &mut String, report: &ReportModel) {
                 }
             }
             // For FFI calls, the foreign symbol is the path terminus.
-            // For FFI calls, the foreign symbol is the path terminus.
             if op.kind == UnsafeOpKind::FfiCall {
                 if let Some(detail) = &op.detail {
                     if !path.is_empty() {
@@ -160,8 +167,12 @@ fn unreachable_section(out: &mut String, report: &ReportModel) {
         .collect();
     let _ = writeln!(
         out,
-        "Unreachable unsafe operations: {}",
-        report.summary.unreachable_unsafe_operations
+        "{}",
+        count_line(
+            "Unreachable unsafe operations",
+            report.summary.unreachable_unsafe_operations,
+            unreachable.len()
+        )
     );
     for finding in unreachable {
         let op = &finding.operation;
@@ -206,9 +217,12 @@ fn structural_section(out: &mut String, report: &ReportModel) {
 fn unresolved_section(out: &mut String, report: &ReportModel) {
     let _ = writeln!(
         out,
-        "Unresolved calls: {} (listed: {})",
-        report.unresolved_calls_total,
-        report.unresolved_calls.len()
+        "{}",
+        count_line(
+            "Unresolved calls",
+            report.unresolved_calls_total,
+            report.unresolved_calls.len()
+        )
     );
     for call in &report.unresolved_calls {
         let _ = writeln!(
@@ -252,6 +266,17 @@ fn limitations_section(out: &mut String, report: &ReportModel) {
     let _ = writeln!(out, "Analysis limitations:");
     for limitation in &report.limitations {
         let _ = writeln!(out, "  - {}", sanitize(limitation));
+    }
+}
+
+/// Section header showing the complete count, plus the listed count when
+/// the section's list is capped below it (summary counts are always
+/// complete; see `docs/json-schema.md`).
+fn count_line(what: &str, total: u64, listed: usize) -> String {
+    if u64::try_from(listed).unwrap_or(u64::MAX) == total {
+        format!("{what}: {total}")
+    } else {
+        format!("{what}: {total} (listed: {listed})")
     }
 }
 

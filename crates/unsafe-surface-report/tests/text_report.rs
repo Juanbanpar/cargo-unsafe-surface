@@ -235,6 +235,31 @@ fn sarif_aggregates_unresolved_calls_without_listed_sites() {
 }
 
 #[test]
+fn capped_lists_show_their_complete_counts() {
+    // Summary counts are complete even when the lists are capped; the
+    // headers must say so instead of showing contradictory numbers.
+    let mut report = sample_report();
+    report.summary.reachable_unsafe_operations = 5;
+    report.summary.unreachable_unsafe_operations = 4;
+    report.unresolved_calls_total = 3;
+    let text = render(&report, OutputFormat::Text).unwrap();
+    assert!(
+        text.contains("Findings (reachable): 5 (listed: 2)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Unreachable unsafe operations: 4 (listed: 1)"),
+        "{text}"
+    );
+    assert!(text.contains("Unresolved calls: 3 (listed: 1)"), "{text}");
+
+    // Uncapped lists show the plain count.
+    let text = render(&sample_report(), OutputFormat::Text).unwrap();
+    assert!(text.contains("Findings (reachable): 2\n"), "{text}");
+    assert!(!text.contains("(listed:"), "{text}");
+}
+
+#[test]
 fn control_characters_are_sanitized() {
     let mut report = sample_report();
     report.findings[0].operation.detail = Some("\u{1b}[31mEVIL\u{1b}[0m".into());

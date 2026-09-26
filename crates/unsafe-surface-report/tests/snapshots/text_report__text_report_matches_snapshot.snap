@@ -52,7 +52,7 @@ Unreachable unsafe operations: 1
 Structural findings: 1
   [manual Send implementation] netlib 0.2.0 — unsafe impl Send for Handle (netlib/src/lib.rs:3:1) — justification: present
 
-Unresolved calls: 1 (listed: 1)
+Unresolved calls: 1
   server::ghost_call -> does_not_exist (server/src/main.rs:7:5) — unknown name
 
 Diagnostics: 1
