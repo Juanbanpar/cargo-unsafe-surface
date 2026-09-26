@@ -11,7 +11,10 @@
 //!
 //! A package's library and each of its binaries are separate *crate
 //! instances* (separate compilation units sharing a crate name); node keys
-//! include the instance so same-named items never collide.
+//! include the instance so same-named items in different instances never
+//! collide. Within one instance, path lookup keeps the first definition
+//! (duplicates arise from cfg-gated siblings), while every definition keeps
+//! its own node and edges.
 //!
 //! Unresolvable call sites become explicit [`UnresolvedCall`]s. The graph
 //! is deterministic: nodes are inserted in input order and adjacency sets
@@ -158,10 +161,16 @@ pub fn build_call_graph(
             package: input.package.clone(),
         });
     }
+    // Node id of every `analysis.functions` record in order; `None` when
+    // the record was dropped by the node limit. Pass 2 uses these instead
+    // of looking nodes up by path, because several records can share one
+    // path (cfg-gated siblings, colliding impl method paths).
+    let mut record_nodes: Vec<Option<NodeId>> = Vec::new();
     let mut truncated = false;
     for (instance, input) in inputs.iter().enumerate() {
         for record in &input.analysis.functions {
             if graph.nodes.len() >= limits.max_graph_nodes {
+                record_nodes.push(None);
                 if !truncated {
                     graph.diagnostics.push(Diagnostic::error(format!(
                         "graph node limit ({}) exceeded; remaining functions are not \
@@ -170,7 +179,7 @@ pub fn build_call_graph(
                     )));
                     truncated = true;
                 }
-                break;
+                continue;
             }
             let id = graph.nodes.len() as NodeId;
             graph.nodes.push(GraphNode {
@@ -184,7 +193,13 @@ pub fn build_call_graph(
                 ops: record.ops.clone(),
             });
             graph.edges.push(BTreeMap::new());
-            graph.index.insert((instance, record.path.clone()), id);
+            // First definition wins for path lookup, matching the symbol
+            // index; the duplicate keeps its own node and edges.
+            graph
+                .index
+                .entry((instance, record.path.clone()))
+                .or_insert(id);
+            record_nodes.push(Some(id));
         }
     }
 
@@ -201,9 +216,10 @@ pub fn build_call_graph(
     );
 
     // Pass 2: resolve call sites into edges (and attach call ops).
+    let mut caller_nodes = record_nodes.iter();
     for (instance, input) in inputs.iter().enumerate() {
         for record in &input.analysis.functions {
-            let Some(&caller_id) = graph.index.get(&(instance, record.path.clone())) else {
+            let Some(caller_id) = caller_nodes.next().copied().flatten() else {
                 continue; // node was truncated by the node limit
             };
             for call in &record.calls {

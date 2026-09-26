@@ -497,6 +497,64 @@ fn graph_construction_is_deterministic() {
 }
 
 #[test]
+fn duplicate_function_paths_keep_their_own_nodes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "dup",
+        &[(
+            "lib.rs",
+            r#"
+#[cfg(unknown_predicate)]
+fn dup() {
+    one();
+}
+#[cfg(not(unknown_predicate))]
+fn dup() {
+    two();
+}
+fn one() {}
+fn two() {}
+"#,
+        )],
+    );
+    let dup = analyze_crate("dup", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &dup.package,
+        is_lib: true,
+        parsed: &dup.parsed,
+        index: &dup.index,
+        analysis: &dup.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+
+    // Both cfg-gated definitions are kept (unknown predicates are an
+    // over-approximation) and each keeps its own node and call edges.
+    let dup_ids: Vec<NodeId> = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.path.to_string() == "dup::dup")
+        .map(|(id, _)| id as NodeId)
+        .collect();
+    assert_eq!(dup_ids.len(), 2, "both cfg-gated siblings must be nodes");
+    let callees = |id: NodeId| -> Vec<String> {
+        graph.edges[id as usize]
+            .keys()
+            .map(|to| path(&graph, *to))
+            .collect()
+    };
+    assert_eq!(callees(dup_ids[0]), ["dup::one"]);
+    assert_eq!(callees(dup_ids[1]), ["dup::two"]);
+
+    // Path lookup keeps the first definition (like the symbol index).
+    assert_eq!(
+        graph.node(&ItemPath::parse("dup::dup").unwrap()),
+        Some(dup_ids[0])
+    );
+}
+
+#[test]
 fn node_limit_truncation_is_diagnosed() {
     let dir = tempfile::tempdir().unwrap();
     let root = write_crate(
