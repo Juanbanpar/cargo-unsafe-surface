@@ -251,6 +251,7 @@ pub fn build_call_graph(
                         *receiver_is_self,
                         receiver_local.as_deref(),
                     ),
+                    CalleeRef::Computed { reason, .. } => Resolution::Unresolved(reason.clone()),
                 };
                 match resolution {
                     Resolution::MayCall(candidates) => {
@@ -395,5 +396,6 @@ fn callee_text(callee: &CalleeRef) -> String {
     match callee {
         CalleeRef::Path { segments } => segments.join("::"),
         CalleeRef::Method { name, .. } => format!("<receiver>.{name}"),
+        CalleeRef::Computed { text, .. } => text.clone(),
     }
 }

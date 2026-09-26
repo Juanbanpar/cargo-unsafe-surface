@@ -415,6 +415,49 @@ fn unresolved_calls_carry_precise_reasons() {
 }
 
 #[test]
+fn computed_callees_stay_unresolved() {
+    // `(s.cb)()` and `(g)()` cannot name an item the way `f(x)` does;
+    // the sites must surface as uncertainty instead of disappearing.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "solo",
+        &[(
+            "lib.rs",
+            r#"
+struct S {
+    cb: fn(),
+}
+fn f(s: S, g: fn()) {
+    (s.cb)();
+    (g)();
+}
+"#,
+        )],
+    );
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    assert_eq!(
+        unresolved_reasons(&graph, "<field value>"),
+        vec![UnresolvedReason::FunctionPointer],
+        "a field value is a computed callee"
+    );
+    // A parenthesized *path* resolves like the bare path: `g` is a
+    // function-pointer parameter.
+    assert_eq!(
+        unresolved_reasons(&graph, "g"),
+        vec![UnresolvedReason::FunctionPointer]
+    );
+}
+
+#[test]
 fn small_ambiguity_sets_become_may_call_edges() {
     let dir = tempfile::tempdir().unwrap();
     let root = write_crate(

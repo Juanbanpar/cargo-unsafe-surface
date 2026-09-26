@@ -31,7 +31,7 @@ use syn::visit::Visit;
 use syn::{Expr, Item};
 use unsafe_surface_core::{
     Confidence, Diagnostic, FunctionKind, PackageId, SourceLocation, StructuralFinding,
-    UnsafeOpKind, UnsafeOperation,
+    UnresolvedReason, UnsafeOpKind, UnsafeOperation,
 };
 
 use crate::index::{foreign_fn_decl, CrateIndex, ModuleImports};
@@ -56,6 +56,15 @@ pub enum CalleeRef {
         /// The receiver's local variable name, when it is a plain
         /// identifier (`x.method()`).
         receiver_local: Option<String>,
+    },
+    /// A call through a computed callee — a field value, an index, a call
+    /// result or a macro expansion. The target cannot be named as an item
+    /// path, so the site is unresolved by construction.
+    Computed {
+        /// Symbolic description of the callee, for reports.
+        text: String,
+        /// Why the callee cannot be resolved.
+        reason: UnresolvedReason,
     },
 }
 
@@ -513,7 +522,13 @@ impl Visit<'_> for FnBodyVisitor<'_> {
     }
 
     fn visit_expr_call(&mut self, node: &syn::ExprCall) {
-        if let Expr::Path(expr_path) = &*node.func {
+        // Parenthesized callees `(f)(x)` name an item like `f(x)` does.
+        let func = match &*node.func {
+            Expr::Paren(paren) => &*paren.expr,
+            Expr::Group(group) => &*group.expr,
+            other => other,
+        };
+        if let Expr::Path(expr_path) = func {
             let segments = Self::path_segments(expr_path);
             if Self::last_segment_is(&segments, &["transmute", "transmute_copy"]) {
                 let op = self.op(UnsafeOpKind::Transmute, expr_path.path.span());
@@ -529,6 +544,22 @@ impl Visit<'_> for FnBodyVisitor<'_> {
             self.record.calls.push(CallSite {
                 callee: CalleeRef::Path { segments },
                 location: location_of(self.module, expr_path.path.span()),
+            });
+        } else {
+            // A computed callee cannot be named as an item, but the site
+            // must still surface as analysis uncertainty instead of
+            // silently disappearing.
+            let reason = if matches!(func, Expr::Macro(_)) {
+                UnresolvedReason::MacroExpansion
+            } else {
+                UnresolvedReason::FunctionPointer
+            };
+            self.record.calls.push(CallSite {
+                callee: CalleeRef::Computed {
+                    text: computed_callee_text(func),
+                    reason,
+                },
+                location: location_of(self.module, node.func.span()),
             });
         }
         syn::visit::visit_expr_call(self, node);
@@ -785,6 +816,21 @@ fn path_string(path: &syn::Path) -> String {
         .map(|s| s.ident.to_string())
         .collect::<Vec<_>>()
         .join("::")
+}
+
+/// Symbolic description of a computed callee for reports (source text is
+/// not available outside procedural macros).
+fn computed_callee_text(func: &Expr) -> String {
+    match func {
+        Expr::Field(_) => "<field value>".to_owned(),
+        Expr::Index(_) => "<indexed value>".to_owned(),
+        Expr::MethodCall(call) => format!("<result of .{}()>", call.method),
+        Expr::Call(_) => "<call result>".to_owned(),
+        Expr::Macro(mac) => format!("{}!() result", path_string(&mac.mac.path)),
+        Expr::Paren(paren) => computed_callee_text(&paren.expr),
+        Expr::Group(group) => computed_callee_text(&group.expr),
+        _ => "<computed callee>".to_owned(),
+    }
 }
 
 /// Whether a macro invocation is inline assembly (`asm!`, `global_asm!`,
