@@ -7,6 +7,35 @@
 //! diagnostic and the offending unit is skipped — the analyser must never
 //! abort, loop forever or exhaust memory because of input shape.
 
+/// Run-wide file budget shared across crate instances.
+///
+/// [`Limits::max_total_files`] bounds one whole analysis run, so the count
+/// must outlive a single crate's parse: create one budget and share it
+/// between the [`crate::source::ParseContext`]s of the run.
+#[derive(Debug, Default)]
+pub struct FileBudget {
+    used: std::cell::Cell<usize>,
+}
+
+impl FileBudget {
+    /// An unused budget.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Files counted so far.
+    #[must_use]
+    pub fn used(&self) -> usize {
+        self.used.get()
+    }
+
+    /// Counts one more file.
+    pub fn record(&self) {
+        self.used.set(self.used.get() + 1);
+    }
+}
+
 /// Configurable analysis limits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Limits {
@@ -22,8 +51,8 @@ pub struct Limits {
     /// path tracking; this catches non-file cycles such as inline modules.
     /// Default: 64.
     pub max_module_depth: usize,
-    /// Maximum number of files parsed across the whole analysis run.
-    /// Default: 200 000.
+    /// Maximum number of files read across the whole analysis run (all
+    /// crate instances share one [`FileBudget`]). Default: 200 000.
     pub max_total_files: usize,
     /// Maximum number of call-graph nodes. Default: 1 000 000.
     pub max_graph_nodes: usize,

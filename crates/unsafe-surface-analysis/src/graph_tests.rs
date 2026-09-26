@@ -14,7 +14,7 @@ use crate::cfg_eval::CfgEvaluator;
 use crate::classify::classify_crate;
 use crate::graph::{build_call_graph, CallGraph, CrateInput, NodeId};
 use crate::index::build_index;
-use crate::limits::Limits;
+use crate::limits::{FileBudget, Limits};
 use crate::source::{parse_crate, ParseContext, ParsedCrate};
 
 /// An analysed in-memory crate.
@@ -30,10 +30,12 @@ fn analyze_crate(name: &str, root: &Path, display_root: &Path) -> TestCrate {
     let values = CfgValues::new();
     let features = BTreeSet::new();
     let limits = Limits::default();
+    let files = FileBudget::new();
     let context = ParseContext {
         cfg: CfgEvaluator::new(&values, &features),
         limits: &limits,
         display_root: Some(display_root),
+        files: &files,
     };
     let parsed = parse_crate(root, &context).expect("crate root must parse");
     let index = build_index(&parsed);

@@ -23,7 +23,7 @@ use unsafe_surface_core::{Diagnostic, SourceLocation};
 
 use crate::cfg_eval::{CfgEvaluator, CfgResult};
 use crate::error::AnalysisError;
-use crate::limits::Limits;
+use crate::limits::{FileBudget, Limits};
 
 /// One parsed module of a crate.
 #[derive(Debug)]
@@ -62,6 +62,9 @@ pub struct ParseContext<'a> {
     pub limits: &'a Limits,
     /// Root used to relativize display paths (usually the workspace root).
     pub display_root: Option<&'a Path>,
+    /// Run-wide file budget shared by all crates of one analysis run (see
+    /// [`Limits::max_total_files`]).
+    pub files: &'a FileBudget,
 }
 
 /// Parses a crate starting at `root_file`.
@@ -134,6 +137,13 @@ impl Walker<'_, '_> {
             )));
             return Ok(());
         }
+        if self.context.files.used() >= self.context.limits.max_total_files {
+            self.diagnostics.push(Diagnostic::warning(format!(
+                "total file limit ({}) exceeded; remaining modules skipped",
+                self.context.limits.max_total_files
+            )));
+            return Ok(());
+        }
 
         let canonical = match file.canonicalize() {
             Ok(path) => path,
@@ -159,6 +169,7 @@ impl Walker<'_, '_> {
         // Count every file that is attempted: unreadable, oversized and
         // unparseable files must not escape the file limits.
         self.files_parsed += 1;
+        self.context.files.record();
 
         let file_display = display_path(file, self.context.display_root);
 
@@ -443,10 +454,12 @@ mod tests {
         }
         let values = CfgValues::new();
         let features = BTreeSet::new();
+        let files = FileBudget::new();
         let context = ParseContext {
             cfg: CfgEvaluator::new(&values, &features),
             limits: &limits,
             display_root: Some(dir.path()),
+            files: &files,
         };
         let parsed = parse_crate(&root.unwrap(), &context).unwrap();
         (parsed, dir)
@@ -637,6 +650,44 @@ mod tests {
     }
 
     #[test]
+    fn total_file_limit_spans_crates() {
+        // One budget bounds the whole run: two crates of two files each
+        // share `max_total_files = 2`.
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            let base = dir.path().join(name);
+            fs::create_dir_all(&base).unwrap();
+            fs::write(base.join("lib.rs"), "mod m;\n").unwrap();
+            fs::write(base.join("m.rs"), "fn f() {}\n").unwrap();
+        }
+        let values = CfgValues::new();
+        let features = BTreeSet::new();
+        let limits = Limits {
+            max_total_files: 2,
+            ..Limits::default()
+        };
+        let files = FileBudget::new();
+        let context = ParseContext {
+            cfg: CfgEvaluator::new(&values, &features),
+            limits: &limits,
+            display_root: Some(dir.path()),
+            files: &files,
+        };
+        let first = parse_crate(&dir.path().join("a/lib.rs"), &context).unwrap();
+        let second = parse_crate(&dir.path().join("b/lib.rs"), &context).unwrap();
+        assert_eq!(files.used(), 2);
+        assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+        assert!(
+            second
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("total file limit")),
+            "the second crate must hit the run-wide budget: {:?}",
+            second.diagnostics
+        );
+    }
+
+    #[test]
     fn inline_module_nesting_is_depth_limited() {
         // Inline modules recurse without touching any file; the depth
         // limit must stop hostile nesting.
@@ -674,10 +725,12 @@ mod tests {
         let values = CfgValues::new();
         let features = BTreeSet::new();
         let limits = Limits::default();
+        let files = FileBudget::new();
         let context = ParseContext {
             cfg: CfgEvaluator::new(&values, &features),
             limits: &limits,
             display_root: None,
+            files: &files,
         };
         let result = parse_crate(&dir.path().join("missing.rs"), &context);
         assert!(matches!(

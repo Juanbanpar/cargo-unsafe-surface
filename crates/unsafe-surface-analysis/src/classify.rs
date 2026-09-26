@@ -796,7 +796,7 @@ mod tests {
     use super::*;
     use crate::cfg_eval::CfgEvaluator;
     use crate::index::build_index;
-    use crate::limits::Limits;
+    use crate::limits::{FileBudget, Limits};
     use crate::source::{parse_crate, ParseContext};
     use std::collections::BTreeSet;
     use std::fs;
@@ -817,10 +817,12 @@ mod tests {
         let values = CfgValues::new();
         let features = BTreeSet::new();
         let limits = Limits::default();
+        let files = FileBudget::new();
         let context = ParseContext {
             cfg: CfgEvaluator::new(&values, &features),
             limits: &limits,
             display_root: Some(dir.path()),
+            files: &files,
         };
         let parsed = parse_crate(&root.unwrap(), &context).unwrap();
         let index = build_index(&parsed);
