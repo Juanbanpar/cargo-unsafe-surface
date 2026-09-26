@@ -70,7 +70,8 @@ target}` or `{kind: "explicit"}`.
   `extern_block`, `ffi_call`, `raw_pointer_deref`, `transmute`,
   `inline_assembly`, `union_field_access`, `mutable_static_access`,
   `mutable_static_definition`, `maybe_uninit_use`, `unchecked_call`.
-* `reachability`: `reachable` | `unreachable` | `structural`.
+* `reachability`: `reachable` | `unreachable`. Module-level constructs
+  are reported in `structural_findings`, which have no reachability.
 * `path` is `null` for unreachable findings; otherwise the steps from an
   entry point to the enclosing function. `call_site`/`edge_confidence`
   of a step describe the edge to the *next* step (`null` on the last).
