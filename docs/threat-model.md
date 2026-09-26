@@ -59,9 +59,13 @@ the user's responsibility.
   manifests) can mislead discovery. The tool validates what it consumes
   (paths must exist, sources must parse) and reports anomalies as
   diagnostics, but it trusts Cargo's view of the world.
-* **Supply-chain of the tool itself**: CI pins code-handling actions to
-  commit hashes, dependency updates flow through Dependabot PRs, and
-  `cargo deny` runs as an advisory check.
+* **Supply-chain of the tool itself**: CI runs inside the official
+  `rust:*` container images and uses only GitHub-maintained actions,
+  referenced by release tags rather than commit hashes — a deliberate
+  trade of pinning rigour for maintenance simplicity. Dependabot keeps
+  the actions and Cargo dependencies current through reviewable PRs, the
+  container images track their upstream tags and are reviewed during
+  maintenance, and `cargo deny` runs as a weekly advisory check.
 
 ## What the tool does NOT promise
 
