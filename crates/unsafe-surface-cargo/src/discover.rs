@@ -317,11 +317,16 @@ fn load_metadata(options: &DiscoveryOptions) -> Result<Metadata, CargoError> {
             .map_err(|p| CargoError::InvalidPath(p, "manifest path is not valid UTF-8"))?;
         command.manifest_path(utf8);
     }
+    // The feature flags are independent and must be combined: enabling a
+    // non-default feature set is `--no-default-features --features x`.
+    // `MetadataCommand` accumulates these options.
     if options.no_default_features {
         command.features(CargoOpt::NoDefaultFeatures);
-    } else if options.all_features {
+    }
+    if options.all_features {
         command.features(CargoOpt::AllFeatures);
-    } else if !options.features.is_empty() {
+    }
+    if !options.features.is_empty() {
         command.features(CargoOpt::SomeFeatures(options.features.clone()));
     }
     if options.offline {

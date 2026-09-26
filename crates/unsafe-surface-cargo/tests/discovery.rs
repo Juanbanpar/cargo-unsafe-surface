@@ -21,6 +21,9 @@ fn write(path: &Path, content: &str) {
 ///  └─dev-depends on────────▶ devutil (lib)
 /// ghost (lib, workspace member, nothing depends on it)
 /// ```
+///
+/// `app` declares a default and a non-default feature so feature selection
+/// can be asserted (`default = ["legacy"]`, plus `secure`).
 fn make_workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -41,6 +44,11 @@ members = ["app", "util", "devutil", "ghost"]
 name = "app"
 version = "0.1.0"
 edition = "2021"
+
+[features]
+default = ["legacy"]
+legacy = []
+secure = []
 
 [dependencies]
 util = { path = "../util" }
@@ -183,4 +191,39 @@ fn origins_are_classified() {
             unsafe_surface_core::DependencyOrigin::Workspace
         );
     }
+}
+
+#[test]
+fn feature_flags_are_combined() {
+    let dir = make_workspace();
+    let enabled = |opts: DiscoveryOptions| {
+        let ws = discover(&opts, false, false).unwrap();
+        ws.package_by_name("app")
+            .unwrap()
+            .enabled_features
+            .iter()
+            .cloned()
+            .collect::<Vec<String>>()
+    };
+
+    // Default features only.
+    assert_eq!(enabled(options(dir.path())), ["default", "legacy"]);
+
+    // `--no-default-features --features x` must keep the explicit set:
+    // the flags are not mutually exclusive.
+    let mut opts = options(dir.path());
+    opts.no_default_features = true;
+    opts.features = vec!["secure".to_owned()];
+    assert_eq!(enabled(opts), ["secure"]);
+
+    // Disabling defaults alone leaves nothing enabled.
+    let mut opts = options(dir.path());
+    opts.no_default_features = true;
+    assert!(enabled(opts).is_empty());
+
+    // `--all-features` still combines with the other flags.
+    let mut opts = options(dir.path());
+    opts.no_default_features = true;
+    opts.all_features = true;
+    assert_eq!(enabled(opts), ["default", "legacy", "secure"]);
 }
