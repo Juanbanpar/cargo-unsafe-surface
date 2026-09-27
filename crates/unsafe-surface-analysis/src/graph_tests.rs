@@ -217,6 +217,43 @@ fn resolves_direct_and_imported_calls() {
 }
 
 #[test]
+fn crate_rooted_glob_imports_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "globber",
+        &[(
+            "lib.rs",
+            r#"
+mod prelude {
+    pub fn exposed() {}
+}
+
+use crate::prelude::*;
+
+pub fn call() {
+    exposed();
+}
+"#,
+        )],
+    );
+    let globber = analyze_crate("globber", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &globber.package,
+        is_lib: true,
+        parsed: &globber.parsed,
+        index: &globber.index,
+        analysis: &globber.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    let callees = callee_paths(&graph, "globber::call");
+    assert!(
+        callees.contains(&"globber::prelude::exposed".to_owned()),
+        "glob-imported item must resolve via `use crate::…::*`; edges: {callees:?}"
+    );
+}
+
+#[test]
 fn unsafe_and_ffi_calls_attach_ops_to_caller() {
     let (graph, _dir) = scenario();
     let main_id = graph.node(&ItemPath::parse("app::main").unwrap()).unwrap();
@@ -327,6 +364,50 @@ pub fn f(a: A) { a.collide(); }
 }
 
 #[test]
+fn may_call_candidates_without_nodes_stay_unresolved() {
+    // Both candidates are trait declarations without bodies: neither is
+    // a graph node, and the call must surface as uncertainty instead of
+    // vanishing.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "solo",
+        &[(
+            "lib.rs",
+            r#"
+trait T {
+    fn collide(&self);
+}
+trait U {
+    fn collide(&self);
+}
+struct X;
+fn caller(x: X) {
+    x.collide();
+}
+"#,
+        )],
+    );
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    assert!(
+        callee_paths(&graph, "solo::caller").is_empty(),
+        "no candidate is representable as an edge"
+    );
+    assert_eq!(
+        unresolved_reasons(&graph, "<receiver>.collide"),
+        vec![UnresolvedReason::AmbiguousMethod { candidates: 2 }]
+    );
+}
+
+#[test]
 fn large_ambiguity_sets_stay_unresolved() {
     let dir = tempfile::tempdir().unwrap();
     // Ten types with a method named `collide` exceed the may-call cap.
@@ -434,6 +515,49 @@ impl W {
 }
 
 #[test]
+fn self_calls_resolved_by_the_heuristic_are_inferred() {
+    // `self.step()` where `step` is not defined on the `Self` type: the
+    // `Self`-type search misses and the unique-name heuristic matches
+    // `B::step`, so the edge must be inferred, not direct.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "solo",
+        &[(
+            "lib.rs",
+            r#"
+struct A;
+impl A {
+    fn run(&self) { self.step(); }
+}
+struct B;
+impl B {
+    fn step(&self) {}
+}
+"#,
+        )],
+    );
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    let run_id = graph
+        .node(&ItemPath::parse("solo::A::run").unwrap())
+        .unwrap();
+    let step_id = graph
+        .node(&ItemPath::parse("solo::B::step").unwrap())
+        .unwrap();
+    let edge = &graph.edges[run_id as usize][&step_id];
+    assert_eq!(edge.kind, unsafe_surface_core::EdgeKind::InferredMethod);
+    assert_eq!(edge.kind.confidence(), Confidence::Inferred);
+}
+
+#[test]
 fn graph_construction_is_deterministic() {
     let (a, _dir_a) = scenario();
     let (b, _dir_b) = scenario();
@@ -457,6 +581,64 @@ fn graph_construction_is_deterministic() {
         lines
     };
     assert_eq!(dump(&a), dump(&b));
+}
+
+#[test]
+fn duplicate_function_paths_keep_their_own_nodes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "dup",
+        &[(
+            "lib.rs",
+            r#"
+#[cfg(unknown_predicate)]
+fn dup() {
+    one();
+}
+#[cfg(not(unknown_predicate))]
+fn dup() {
+    two();
+}
+fn one() {}
+fn two() {}
+"#,
+        )],
+    );
+    let dup = analyze_crate("dup", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &dup.package,
+        is_lib: true,
+        parsed: &dup.parsed,
+        index: &dup.index,
+        analysis: &dup.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+
+    // Both cfg-gated definitions are kept (unknown predicates are an
+    // over-approximation) and each keeps its own node and call edges.
+    let dup_ids: Vec<NodeId> = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.path.to_string() == "dup::dup")
+        .map(|(id, _)| id as NodeId)
+        .collect();
+    assert_eq!(dup_ids.len(), 2, "both cfg-gated siblings must be nodes");
+    let callees = |id: NodeId| -> Vec<String> {
+        graph.edges[id as usize]
+            .keys()
+            .map(|to| path(&graph, *to))
+            .collect()
+    };
+    assert_eq!(callees(dup_ids[0]), ["dup::one"]);
+    assert_eq!(callees(dup_ids[1]), ["dup::two"]);
+
+    // Path lookup keeps the first definition (like the symbol index).
+    assert_eq!(
+        graph.node(&ItemPath::parse("dup::dup").unwrap()),
+        Some(dup_ids[0])
+    );
 }
 
 #[test]

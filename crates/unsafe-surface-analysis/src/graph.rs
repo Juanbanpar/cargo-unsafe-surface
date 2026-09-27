@@ -11,7 +11,10 @@
 //!
 //! A package's library and each of its binaries are separate *crate
 //! instances* (separate compilation units sharing a crate name); node keys
-//! include the instance so same-named items never collide.
+//! include the instance so same-named items in different instances never
+//! collide. Within one instance, path lookup keeps the first definition
+//! (duplicates arise from cfg-gated siblings), while every definition keeps
+//! its own node and edges.
 //!
 //! Unresolvable call sites become explicit [`UnresolvedCall`]s. The graph
 //! is deterministic: nodes are inserted in input order and adjacency sets
@@ -115,6 +118,18 @@ impl CallGraph {
         self.index.get(&(instance, path.to_vec())).copied()
     }
 
+    /// Node lookup for item paths that name no crate (`crate::…` entry
+    /// paths): every instance is searched, in instance order (libraries
+    /// first), returning one node per instance that defines the item.
+    #[must_use]
+    pub fn nodes_matching(&self, segments: &[String]) -> Vec<NodeId> {
+        self.index
+            .iter()
+            .filter(|((_, path), _)| path.as_slice() == segments)
+            .map(|(_, &id)| id)
+            .collect()
+    }
+
     /// Number of edges in the graph.
     #[must_use]
     pub fn edge_count(&self) -> usize {
@@ -158,10 +173,16 @@ pub fn build_call_graph(
             package: input.package.clone(),
         });
     }
+    // Node id of every `analysis.functions` record in order; `None` when
+    // the record was dropped by the node limit. Pass 2 uses these instead
+    // of looking nodes up by path, because several records can share one
+    // path (cfg-gated siblings, colliding impl method paths).
+    let mut record_nodes: Vec<Option<NodeId>> = Vec::new();
     let mut truncated = false;
     for (instance, input) in inputs.iter().enumerate() {
         for record in &input.analysis.functions {
             if graph.nodes.len() >= limits.max_graph_nodes {
+                record_nodes.push(None);
                 if !truncated {
                     graph.diagnostics.push(Diagnostic::error(format!(
                         "graph node limit ({}) exceeded; remaining functions are not \
@@ -170,7 +191,7 @@ pub fn build_call_graph(
                     )));
                     truncated = true;
                 }
-                break;
+                continue;
             }
             let id = graph.nodes.len() as NodeId;
             graph.nodes.push(GraphNode {
@@ -184,7 +205,13 @@ pub fn build_call_graph(
                 ops: record.ops.clone(),
             });
             graph.edges.push(BTreeMap::new());
-            graph.index.insert((instance, record.path.clone()), id);
+            // First definition wins for path lookup, matching the symbol
+            // index; the duplicate keeps its own node and edges.
+            graph
+                .index
+                .entry((instance, record.path.clone()))
+                .or_insert(id);
+            record_nodes.push(Some(id));
         }
     }
 
@@ -201,9 +228,10 @@ pub fn build_call_graph(
     );
 
     // Pass 2: resolve call sites into edges (and attach call ops).
+    let mut caller_nodes = record_nodes.iter();
     for (instance, input) in inputs.iter().enumerate() {
         for record in &input.analysis.functions {
-            let Some(&caller_id) = graph.index.get(&(instance, record.path.clone())) else {
+            let Some(caller_id) = caller_nodes.next().copied().flatten() else {
                 continue; // node was truncated by the node limit
             };
             for call in &record.calls {
@@ -225,6 +253,8 @@ pub fn build_call_graph(
                 };
                 match resolution {
                     Resolution::MayCall(candidates) => {
+                        let candidate_count = candidates.len();
+                        let mut linked = 0;
                         for (callee_instance, target) in candidates {
                             if let Some(&callee_id) =
                                 graph.index.get(&(callee_instance, target.segments.clone()))
@@ -244,10 +274,28 @@ pub fn build_call_graph(
                                     input,
                                     &record.module,
                                 );
+                                linked += 1;
                             }
                         }
+                        if linked == 0 {
+                            // No candidate is representable as a node
+                            // (trait method declarations without bodies,
+                            // a truncated graph): the call must surface
+                            // as uncertainty instead of vanishing.
+                            graph.unresolved.push(UnresolvedCall {
+                                caller: ItemPath::new(
+                                    input.package.crate_name(),
+                                    record.path.clone(),
+                                ),
+                                callee_text: callee_text(&call.callee),
+                                location: call.location.clone(),
+                                reason: UnresolvedReason::AmbiguousMethod {
+                                    candidates: candidate_count,
+                                },
+                            });
+                        }
                     }
-                    Resolution::Callable(callee_instance, target) => {
+                    Resolution::Callable(callee_instance, target, edge_kind) => {
                         let Some(&callee_id) =
                             graph.index.get(&(callee_instance, target.segments.clone()))
                         else {
@@ -263,13 +311,6 @@ pub fn build_call_graph(
                                 reason: UnresolvedReason::UnknownName,
                             });
                             continue;
-                        };
-                        let edge_kind = match &call.callee {
-                            CalleeRef::Method {
-                                receiver_is_self: false,
-                                ..
-                            } => EdgeKind::InferredMethod,
-                            _ => EdgeKind::Direct,
                         };
                         // First edge to a callee wins; call-site iteration
                         // is deterministic.

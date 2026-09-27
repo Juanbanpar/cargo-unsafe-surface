@@ -268,6 +268,20 @@ fn classify_item(
                 });
             }
         }
+        Item::Macro(item_macro) if is_inline_assembly_macro(&item_macro.mac.path) => {
+            // Item-position macro invocations: `global_asm!` and friends.
+            // Body-position invocations are classified by `FnBodyVisitor`.
+            analysis.structural.push(StructuralFinding {
+                kind: UnsafeOpKind::InlineAssembly,
+                package: package.clone(),
+                location: location_of(module, item_macro.mac.path.span()),
+                detail: format!("{}! macro", path_string(&item_macro.mac.path)),
+                justification: find_justification(
+                    &module.text,
+                    start_line(item_macro.mac.path.span()),
+                ),
+            });
+        }
         _ => {}
     }
 }
@@ -564,19 +578,17 @@ impl Visit<'_> for FnBodyVisitor<'_> {
         syn::visit::visit_expr_field(self, node);
     }
 
-    fn visit_expr_macro(&mut self, node: &syn::ExprMacro) {
-        let segments: Vec<String> = node
-            .mac
-            .path
-            .segments
-            .iter()
-            .map(|s| s.ident.to_string())
-            .collect();
-        if Self::last_segment_is(&segments, &["asm", "global_asm", "naked_asm"]) {
-            let op = self.op(UnsafeOpKind::InlineAssembly, node.mac.path.span());
-            self.record.ops.push(op.with_detail(segments.join("::")));
+    fn visit_macro(&mut self, node: &syn::Macro) {
+        // Every macro position funnels through here — expression,
+        // statement (`asm!("nop");`) and nested-item invocations alike —
+        // so inline assembly is seen wherever it is written.
+        if is_inline_assembly_macro(&node.path) {
+            let op = self.op(UnsafeOpKind::InlineAssembly, node.path.span());
+            self.record
+                .ops
+                .push(op.with_detail(path_string(&node.path)));
         }
-        syn::visit::visit_expr_macro(self, node);
+        syn::visit::visit_macro(self, node);
     }
 
     fn visit_expr_path(&mut self, node: &syn::ExprPath) {
@@ -629,14 +641,15 @@ impl Visit<'_> for FnBodyVisitor<'_> {
     }
 
     fn visit_item(&mut self, node: &Item) {
-        // `use` declarations inside bodies feed the resolution scope…
-        if let Item::Use(item_use) = node {
-            self.visit_item_use(item_use);
+        match node {
+            // `use` declarations inside bodies feed the resolution scope…
+            Item::Use(item_use) => self.visit_item_use(item_use),
+            // …while other items nested inside function bodies (inner
+            // fns, impls, …) are not modelled as separate graph nodes;
+            // their calls and unsafe operations are conservatively
+            // attributed to the enclosing function (see the limitations).
+            item => syn::visit::visit_item(self, item),
         }
-        // …but other items nested inside function bodies (inner fns,
-        // impls, …) are not modelled as separate graph nodes in this
-        // version; their calls are conservatively attributed to the
-        // enclosing function. Recorded in the analysis limitations.
     }
 }
 
@@ -739,6 +752,18 @@ fn path_string(path: &syn::Path) -> String {
         .map(|s| s.ident.to_string())
         .collect::<Vec<_>>()
         .join("::")
+}
+
+/// Whether a macro invocation is inline assembly (`asm!`, `global_asm!`,
+/// `naked_asm!`, matched by last segment).
+fn is_inline_assembly_macro(path: &syn::Path) -> bool {
+    let Some(last) = path.segments.last() else {
+        return false;
+    };
+    matches!(
+        last.ident.to_string().as_str(),
+        "asm" | "global_asm" | "naked_asm"
+    )
 }
 
 fn joined(module: &[String], name: &str) -> Vec<String> {
@@ -881,6 +906,62 @@ mod tests {
             .find(|op| op.kind == UnsafeOpKind::InlineAssembly)
             .expect("asm! not detected");
         assert_eq!(asm.detail.as_deref(), Some("core::arch::asm"));
+    }
+
+    #[test]
+    fn nested_items_are_attributed_to_the_enclosing_function() {
+        let (analysis, _dir) = analyze(&[(
+            "lib.rs",
+            "fn outer() {\n\
+             \x20   fn inner(p: *const i32) -> i32 {\n\
+             \x20       unsafe { *p }\n\
+             \x20   }\n\
+             \x20   let _ = inner(0 as *const i32);\n\
+             }\n",
+        )]);
+        let outer = function(&analysis, "outer");
+        assert!(
+            outer
+                .ops
+                .iter()
+                .any(|op| op.kind == UnsafeOpKind::UnsafeBlock),
+            "unsafe block inside a nested fn must be attributed to `outer`: {:?}",
+            outer.ops
+        );
+        assert!(
+            outer.calls.iter().any(|call| matches!(
+                &call.callee,
+                CalleeRef::Path { segments }
+                    if segments.last().map(String::as_str) == Some("inner")
+            )),
+            "call inside a nested fn must be attributed to `outer`: {:?}",
+            outer.calls
+        );
+    }
+
+    #[test]
+    fn detects_inline_assembly_in_statement_and_item_position() {
+        let (analysis, _dir) = analyze(&[(
+            "lib.rs",
+            "core::arch::global_asm!(\"nop\");\n\
+             fn f() {\n    unsafe { core::arch::asm!(\"nop\"); };\n}\n",
+        )]);
+        // Statement-position `asm!(…);` is a `Stmt::Macro`, not an
+        // expression macro, and must still be classified.
+        let ops = &function(&analysis, "f").ops;
+        assert!(
+            ops.iter().any(|op| op.kind == UnsafeOpKind::InlineAssembly),
+            "statement-position asm! not detected: {ops:?}"
+        );
+        // Item-position `global_asm!` is a module-level construct.
+        assert!(
+            analysis
+                .structural
+                .iter()
+                .any(|s| s.kind == UnsafeOpKind::InlineAssembly),
+            "global_asm! not detected: {:?}",
+            analysis.structural
+        );
     }
 
     #[test]

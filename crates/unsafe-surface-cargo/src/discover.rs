@@ -317,11 +317,16 @@ fn load_metadata(options: &DiscoveryOptions) -> Result<Metadata, CargoError> {
             .map_err(|p| CargoError::InvalidPath(p, "manifest path is not valid UTF-8"))?;
         command.manifest_path(utf8);
     }
+    // The feature flags are independent and must be combined: enabling a
+    // non-default feature set is `--no-default-features --features x`.
+    // `MetadataCommand` accumulates these options.
     if options.no_default_features {
         command.features(CargoOpt::NoDefaultFeatures);
-    } else if options.all_features {
+    }
+    if options.all_features {
         command.features(CargoOpt::AllFeatures);
-    } else if !options.features.is_empty() {
+    }
+    if !options.features.is_empty() {
         command.features(CargoOpt::SomeFeatures(options.features.clone()));
     }
     if options.offline {
@@ -378,6 +383,24 @@ fn dependency_closure(
     Some(seen.into_iter().collect())
 }
 
+/// Maps a Cargo source ID to a [`DependencyOrigin`].
+///
+/// Source IDs are `<kind>+<url>` — for example `registry+https://…` or
+/// `sparse+https://index.crates.io/` for registries, `git+https://…` for
+/// git dependencies — with a `-` separator in older Cargo releases.
+/// Path dependencies have no source ID at all.
+fn source_origin(source: &str) -> DependencyOrigin {
+    let kind = source
+        .split_once('+')
+        .or_else(|| source.split_once('-'))
+        .map_or(source, |(kind, _)| kind);
+    match kind {
+        "registry" | "sparse" => DependencyOrigin::Registry,
+        "git" => DependencyOrigin::Git,
+        _ => DependencyOrigin::Unknown,
+    }
+}
+
 /// Maps a Cargo package to our core [`PackageId`].
 fn core_package_id(
     package: &Package,
@@ -388,13 +411,7 @@ fn core_package_id(
     } else {
         match package.source.as_ref().map(|s| s.repr.as_str()) {
             None => DependencyOrigin::Path,
-            Some(source) if source.starts_with("registry-") || source.starts_with("sparse-") => {
-                DependencyOrigin::Registry
-            }
-            Some(source) if source.starts_with("git-") || source.starts_with("git+") => {
-                DependencyOrigin::Git
-            }
-            _ => DependencyOrigin::Unknown,
+            Some(source) => source_origin(source),
         }
     };
     PackageId::new(
@@ -452,5 +469,51 @@ fn discovered_package(
         enabled_features,
         edition: package.edition.to_string(),
         sources_available,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_ids_map_to_origins() {
+        // crates.io, both the git index and the sparse index, and
+        // alternative registries.
+        assert_eq!(
+            source_origin("registry+https://github.com/rust-lang/crates.io-index"),
+            DependencyOrigin::Registry
+        );
+        assert_eq!(
+            source_origin("sparse+https://index.crates.io/"),
+            DependencyOrigin::Registry
+        );
+        assert_eq!(
+            source_origin("registry+https://example.com/my-index"),
+            DependencyOrigin::Registry
+        );
+        // Older Cargo releases used a `-` separator.
+        assert_eq!(
+            source_origin("registry-https://github.com/rust-lang/crates.io-index"),
+            DependencyOrigin::Registry
+        );
+
+        // Git dependencies over the usual transports.
+        assert_eq!(
+            source_origin("git+https://github.com/foo/bar"),
+            DependencyOrigin::Git
+        );
+        assert_eq!(
+            source_origin("git+file:///srv/mirror/bar"),
+            DependencyOrigin::Git
+        );
+
+        // Anything unrecognized stays unknown: it is not treated as an
+        // audited registry dependency by policy.
+        assert_eq!(
+            source_origin("https://example.com/mystery"),
+            DependencyOrigin::Unknown
+        );
+        assert_eq!(source_origin(""), DependencyOrigin::Unknown);
     }
 }
