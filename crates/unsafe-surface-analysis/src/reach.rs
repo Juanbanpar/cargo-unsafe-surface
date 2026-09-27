@@ -20,8 +20,6 @@ pub struct Reachability {
     /// BFS tree: node → (parent, edge from parent). Used to reconstruct
     /// one shortest path per node.
     parent: BTreeMap<NodeId, (NodeId, EdgeMeta)>,
-    /// Entry-point nodes the search started from.
-    entries: Vec<NodeId>,
 }
 
 impl Reachability {
@@ -34,7 +32,6 @@ impl Reachability {
             if entry as usize >= graph.nodes.len() || !result.reachable.insert(entry) {
                 continue;
             }
-            result.entries.push(entry);
             queue.push_back(entry);
         }
         while let Some(current) = queue.pop_front() {

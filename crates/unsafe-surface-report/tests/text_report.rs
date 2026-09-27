@@ -187,7 +187,7 @@ fn sarif_output_is_valid_2_1_0() {
     assert_eq!(run["columnKind"], "unicodeCodePoints");
     // Rules cover all op kinds plus the aggregated unresolved entry.
     let rules = run["tool"]["driver"]["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 19);
+    assert_eq!(rules.len(), UnsafeOpKind::ALL.len() + 1);
     assert!(rules.iter().any(|r| r["id"] == "ffi_call"));
     // Results: 2 reachable findings + 1 unreachable (as a note, not an
     // alert) + 1 structural + aggregated unresolved.

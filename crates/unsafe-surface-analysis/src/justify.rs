@@ -19,30 +19,52 @@ const MAX_SCAN_LINES: usize = 16;
 /// construct starting at 1-based `line` in `text`.
 #[must_use]
 pub fn find_justification(text: &str, line: u32) -> SafetyJustification {
-    let lines: Vec<&str> = text.lines().collect();
-    if line == 0 || line as usize > lines.len() {
-        return SafetyJustification::Absent;
-    }
-    let mut index = line as usize - 1; // index of the construct line
-    let mut scanned = 0;
-    while index > 0 && scanned < MAX_SCAN_LINES {
-        index -= 1;
-        scanned += 1;
-        let trimmed = lines[index].trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            // Blank lines and attributes do not break the association.
-            continue;
+    Justifications::new(text).find(line)
+}
+
+/// Justification lookup against one module's text, caching the line split
+/// so many lookups in the same file stay linear in its size.
+pub struct Justifications<'a> {
+    lines: Vec<&'a str>,
+}
+
+impl<'a> Justifications<'a> {
+    /// Splits `text` into lines once.
+    #[must_use]
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            lines: text.lines().collect(),
         }
-        if let Some(comment) = line_comment(trimmed) {
-            if is_safety_marker(comment) {
-                return SafetyJustification::Present;
+    }
+
+    /// Whether a safety justification comment was found directly above
+    /// the construct starting at 1-based `line`.
+    #[must_use]
+    pub fn find(&self, line: u32) -> SafetyJustification {
+        if line == 0 || line as usize > self.lines.len() {
+            return SafetyJustification::Absent;
+        }
+        let mut index = line as usize - 1; // index of the construct line
+        let mut scanned = 0;
+        while index > 0 && scanned < MAX_SCAN_LINES {
+            index -= 1;
+            scanned += 1;
+            let trimmed = self.lines[index].trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                // Blank lines and attributes do not break the association.
+                continue;
             }
-            continue;
+            if let Some(comment) = line_comment(trimmed) {
+                if is_safety_marker(comment) {
+                    return SafetyJustification::Present;
+                }
+                continue;
+            }
+            // Any other line (code) ends the scan.
+            break;
         }
-        // Any other line (code) ends the scan.
-        break;
+        SafetyJustification::Absent
     }
-    SafetyJustification::Absent
 }
 
 /// Extracts the comment payload of a `//`-style line (including doc
@@ -111,6 +133,14 @@ mod tests {
         assert_eq!(find_justification("", 1), SafetyJustification::Absent);
         assert_eq!(find_justification("a\n", 0), SafetyJustification::Absent);
         assert_eq!(find_justification("a\n", 99), SafetyJustification::Absent);
+    }
+
+    #[test]
+    fn scanner_serves_many_lookups() {
+        let scanner = Justifications::new("// SAFETY: ok\nunsafe fn f() {}\nfn g() {}\n");
+        assert_eq!(scanner.find(2), SafetyJustification::Present);
+        assert_eq!(scanner.find(3), SafetyJustification::Absent);
+        assert_eq!(scanner.find(99), SafetyJustification::Absent);
     }
 
     #[test]

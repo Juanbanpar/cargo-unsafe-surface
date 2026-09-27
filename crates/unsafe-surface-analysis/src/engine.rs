@@ -10,7 +10,7 @@ use unsafe_surface_cargo::{CfgValues, DiscoveredWorkspace, SelectedTarget, Targe
 use unsafe_surface_core::{
     AnalysisConfiguration, Diagnostic, EntryPoint, EntryPointKind, Finding, ItemPath, PackageId,
     PackageInfo, Reachability as FindingReachability, ReportModel, StructuralFinding,
-    SummaryCounts, ToolInfo, UnresolvedReason, SCHEMA_VERSION,
+    SummaryCounts, ToolInfo, UnresolvedCall, UnresolvedReason, SCHEMA_VERSION,
 };
 
 use crate::cfg_eval::CfgEvaluator;
@@ -332,9 +332,65 @@ fn assemble_report(
     entry_points: Vec<EntryPoint>,
     mut diagnostics: Vec<Diagnostic>,
 ) -> ReportModel {
-    // Findings from node operations.
+    let (findings, mut summary, mut finding_diagnostics) =
+        collect_findings(graph, reachability, &config.limits);
+    diagnostics.append(&mut finding_diagnostics);
+
+    let structural_findings = collect_structural(bundles);
+    summary.manual_send_sync_impls = structural_findings
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                unsafe_surface_core::UnsafeOpKind::SendImpl
+                    | unsafe_surface_core::UnsafeOpKind::SyncImpl
+            )
+        })
+        .count() as u64;
+
+    let (unresolved_calls, unresolved_total, std_calls) =
+        collect_unresolved(graph, &config.limits, &mut diagnostics);
+    summary.unresolved_calls = unresolved_total;
+
+    ReportModel {
+        schema_version: SCHEMA_VERSION,
+        tool: ToolInfo {
+            name: "cargo-unsafe-surface".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+        },
+        configuration: AnalysisConfiguration {
+            packages: config.packages.clone(),
+            include_dependencies: config.include_dependencies,
+            include_dev_dependencies: config.include_dev_dependencies,
+            explicit_entries: config.explicit_entries.clone(),
+            features: config.features.clone(),
+            all_features: config.all_features,
+            no_default_features: config.no_default_features,
+            target: config.target.clone(),
+        },
+        packages: collect_packages(workspace, config),
+        entry_points,
+        summary,
+        findings,
+        structural_findings,
+        unresolved_calls,
+        unresolved_calls_total: unresolved_total,
+        diagnostics,
+        limitations: default_limitations(std_calls),
+    }
+}
+
+/// Findings from node operations, in deterministic order and with ids
+/// assigned. Returns the findings, the operation-count summary and the
+/// list-capping diagnostics.
+fn collect_findings(
+    graph: &CallGraph,
+    reachability: &Reachability,
+    limits: &Limits,
+) -> (Vec<Finding>, SummaryCounts, Vec<Diagnostic>) {
     let mut findings: Vec<Finding> = Vec::new();
     let mut summary = SummaryCounts::default();
+    let mut diagnostics = Vec::new();
     let mut reachable_by_kind = std::collections::BTreeMap::new();
 
     for (id, node) in graph.nodes.iter().enumerate() {
@@ -405,18 +461,21 @@ fn assemble_report(
             ))
     });
     let total_findings = findings.len();
-    if total_findings > config.limits.max_findings_listed {
+    if total_findings > limits.max_findings_listed {
         diagnostics.push(Diagnostic::warning(format!(
             "finding list capped at {} of {} (counts in the summary are complete)",
-            config.limits.max_findings_listed, total_findings
+            limits.max_findings_listed, total_findings
         )));
-        findings.truncate(config.limits.max_findings_listed);
+        findings.truncate(limits.max_findings_listed);
     }
     for (id, finding) in findings.iter_mut().enumerate() {
         finding.id = id as u64;
     }
+    (findings, summary, diagnostics)
+}
 
-    // Structural findings from all analysed crates.
+/// Structural findings from all analysed crates, sorted and deduplicated.
+fn collect_structural(bundles: &[CrateBundle]) -> Vec<StructuralFinding> {
     let mut structural: Vec<StructuralFinding> = bundles
         .iter()
         .flat_map(|b| b.analysis.structural.iter().cloned())
@@ -425,19 +484,18 @@ fn assemble_report(
         .sort_by(|a, b| (&a.package, a.kind, &a.location).cmp(&(&b.package, b.kind, &b.location)));
     structural
         .dedup_by(|a, b| a.package == b.package && a.kind == b.kind && a.location == b.location);
-    summary.manual_send_sync_impls = structural
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.kind,
-                unsafe_surface_core::UnsafeOpKind::SendImpl
-                    | unsafe_surface_core::UnsafeOpKind::SyncImpl
-            )
-        })
-        .count() as u64;
+    structural
+}
 
-    // Unresolved calls: standard-library calls are expected and counted
-    // separately; everything else is analysis uncertainty.
+/// Unresolved call sites with the standard-library ones counted apart:
+/// those are expected, everything else is analysis uncertainty. Returns
+/// the (possibly capped) list, its complete total and the number of
+/// standard-library call sites.
+fn collect_unresolved(
+    graph: &CallGraph,
+    limits: &Limits,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (Vec<UnresolvedCall>, u64, u64) {
     let mut unresolved: Vec<_> = graph.unresolved.clone();
     let std_calls = unresolved
         .iter()
@@ -447,18 +505,20 @@ fn assemble_report(
     unresolved.sort_by(|a, b| {
         (&a.caller, &a.location, &a.callee_text).cmp(&(&b.caller, &b.location, &b.callee_text))
     });
-    let unresolved_total = unresolved.len() as u64;
-    if unresolved.len() > config.limits.max_unresolved_calls_listed {
+    let total = unresolved.len() as u64;
+    if unresolved.len() > limits.max_unresolved_calls_listed {
         diagnostics.push(Diagnostic::info(format!(
             "unresolved-call list capped at {} of {}",
-            config.limits.max_unresolved_calls_listed, unresolved_total
+            limits.max_unresolved_calls_listed, total
         )));
-        unresolved.truncate(config.limits.max_unresolved_calls_listed);
+        unresolved.truncate(limits.max_unresolved_calls_listed);
     }
-    summary.unresolved_calls = unresolved_total;
+    (unresolved, total, std_calls)
+}
 
-    // Packages analysed (plus unavailable ones for transparency).
-    let packages: Vec<PackageInfo> = workspace
+/// Packages analysed (plus unavailable ones for transparency).
+fn collect_packages(workspace: &DiscoveredWorkspace, config: &AnalysisConfig) -> Vec<PackageInfo> {
+    workspace
         .packages
         .iter()
         .filter(|p| workspace.selected.contains(&p.id) || config.include_dependencies)
@@ -467,34 +527,7 @@ fn assemble_report(
             root: p.manifest_dir.to_string(),
             sources_available: p.sources_available,
         })
-        .collect();
-
-    ReportModel {
-        schema_version: SCHEMA_VERSION,
-        tool: ToolInfo {
-            name: "cargo-unsafe-surface".to_owned(),
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-        },
-        configuration: AnalysisConfiguration {
-            packages: config.packages.clone(),
-            include_dependencies: config.include_dependencies,
-            include_dev_dependencies: config.include_dev_dependencies,
-            explicit_entries: config.explicit_entries.clone(),
-            features: config.features.clone(),
-            all_features: config.all_features,
-            no_default_features: config.no_default_features,
-            target: config.target.clone(),
-        },
-        packages,
-        entry_points,
-        summary,
-        findings,
-        structural_findings: structural,
-        unresolved_calls: unresolved,
-        unresolved_calls_total: unresolved_total,
-        diagnostics,
-        limitations: default_limitations(std_calls),
-    }
+        .collect()
 }
 
 /// The limitations disclosed in every report.

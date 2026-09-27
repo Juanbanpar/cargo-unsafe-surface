@@ -66,6 +66,20 @@ pub enum DependencyOrigin {
     Unknown,
 }
 
+impl DependencyOrigin {
+    /// Short label used in reports.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Path => "path",
+            Self::Registry => "registry",
+            Self::Git => "git",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// A source position. Lines are 1-based; columns are 1-based Unicode code
 /// points (`proc-macro2`'s 0-based columns count characters).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -205,6 +219,29 @@ pub enum Severity {
     Warning,
     /// Part of the analysis failed; results are definitely incomplete.
     Error,
+}
+
+impl Confidence {
+    /// Short label used in reports.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Inferred => "inferred",
+        }
+    }
+}
+
+impl Severity {
+    /// Short label used in reports.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
 }
 
 /// Name and version of the tool that produced a report.

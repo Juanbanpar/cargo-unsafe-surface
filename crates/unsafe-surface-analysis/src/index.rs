@@ -19,50 +19,25 @@ use crate::source::ParsedCrate;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexItemKind {
     /// A free function.
-    Fn {
-        /// Whether it is declared `unsafe`.
-        is_unsafe: bool,
-    },
+    Fn,
     /// A method (inherent or trait impl); the item path includes the
     /// `Type::` or `Type::Trait::` component.
-    Method {
-        /// Whether it is declared `unsafe`.
-        is_unsafe: bool,
-    },
+    Method,
     /// A trait method (declaration or default body).
-    TraitMethod {
-        /// Whether it is declared `unsafe`.
-        is_unsafe: bool,
-    },
+    TraitMethod,
     /// A foreign function from an `extern "..."` block.
     ExternFn,
     /// A static item.
-    Static {
-        /// Whether it is `static mut`.
-        mutable: bool,
-    },
+    Static,
     /// A union type.
     Union,
     /// A trait.
-    Trait {
-        /// Whether it is `unsafe trait`.
-        is_unsafe: bool,
-    },
+    Trait,
     /// A module.
     Module,
     /// Any other item kind (struct, enum, const, type alias, …). Tracked so
     /// path resolution can distinguish "known non-callable" from "unknown".
     Other,
-}
-
-/// An indexed item.
-#[derive(Debug, Clone)]
-pub struct IndexItem {
-    /// Item kind.
-    pub kind: IndexItemKind,
-    /// Whether the item is `pub` (unrestricted). Restricted visibilities
-    /// such as `pub(crate)` count as non-public for entry-point selection.
-    pub is_pub: bool,
 }
 
 /// Imports declared in one module.
@@ -83,10 +58,6 @@ pub struct ImplRecord {
     pub module: Vec<String>,
     /// `Self` type path segments as written (generics stripped).
     pub self_ty: Vec<String>,
-    /// Implemented trait path segments as written, if any.
-    pub trait_ty: Option<Vec<String>>,
-    /// Whether this is `unsafe impl`.
-    pub is_unsafe: bool,
     /// Method names defined by this impl, mapped to their item paths
     /// (module + `Self::` + name).
     pub methods: BTreeMap<String, Vec<String>>,
@@ -96,7 +67,7 @@ pub struct ImplRecord {
 #[derive(Debug, Default)]
 pub struct CrateIndex {
     /// All indexed items by module-relative path.
-    pub items: BTreeMap<Vec<String>, IndexItem>,
+    pub items: BTreeMap<Vec<String>, IndexItemKind>,
     /// Method name → item paths of all known methods with that name
     /// (across all impl blocks). Used by the unique-name heuristic.
     pub method_index: BTreeMap<String, Vec<Vec<String>>>,
@@ -106,10 +77,6 @@ pub struct CrateIndex {
     pub unions: BTreeSet<String>,
     /// Item paths of `static mut` definitions.
     pub mutable_statics: BTreeSet<Vec<String>>,
-    /// Item paths of `unsafe fn` definitions.
-    pub unsafe_fns: BTreeSet<Vec<String>>,
-    /// Item paths of foreign function declarations.
-    pub extern_fns: BTreeSet<Vec<String>>,
     /// Imports per module path.
     pub imports: BTreeMap<Vec<String>, ModuleImports>,
 }
@@ -129,86 +96,40 @@ pub fn build_index(parsed: &ParsedCrate) -> CrateIndex {
 fn index_item(index: &mut CrateIndex, module: &[String], item: &Item) {
     match item {
         Item::Fn(item_fn) => {
-            let path = joined(module, &item_fn.sig.ident.to_string());
-            let is_unsafe = item_fn.sig.unsafety.is_some();
             insert(
                 index,
-                path.clone(),
-                IndexItem {
-                    kind: IndexItemKind::Fn { is_unsafe },
-                    is_pub: is_pub(&item_fn.vis),
-                },
+                joined(module, &item_fn.sig.ident.to_string()),
+                IndexItemKind::Fn,
             );
-            if is_unsafe {
-                index.unsafe_fns.insert(path);
-            }
         }
         Item::Mod(item_mod) => {
             insert(
                 index,
                 joined(module, &item_mod.ident.to_string()),
-                IndexItem {
-                    kind: IndexItemKind::Module,
-                    is_pub: is_pub(&item_mod.vis),
-                },
+                IndexItemKind::Module,
             );
         }
         Item::Static(item_static) => {
             let path = joined(module, &item_static.ident.to_string());
             let mutable = matches!(item_static.mutability, syn::StaticMutability::Mut(_));
-            insert(
-                index,
-                path.clone(),
-                IndexItem {
-                    kind: IndexItemKind::Static { mutable },
-                    is_pub: is_pub(&item_static.vis),
-                },
-            );
+            insert(index, path.clone(), IndexItemKind::Static);
             if mutable {
                 index.mutable_statics.insert(path);
             }
         }
         Item::Union(item_union) => {
             let name = item_union.ident.to_string();
-            insert(
-                index,
-                joined(module, &name),
-                IndexItem {
-                    kind: IndexItemKind::Union,
-                    is_pub: is_pub(&item_union.vis),
-                },
-            );
+            insert(index, joined(module, &name), IndexItemKind::Union);
             index.unions.insert(name);
         }
         Item::Trait(item_trait) => {
             let name = item_trait.ident.to_string();
             let path = joined(module, &name);
-            let is_unsafe = item_trait.unsafety.is_some();
-            insert(
-                index,
-                path.clone(),
-                IndexItem {
-                    kind: IndexItemKind::Trait { is_unsafe },
-                    is_pub: is_pub(&item_trait.vis),
-                },
-            );
+            insert(index, path.clone(), IndexItemKind::Trait);
             for trait_item in &item_trait.items {
                 if let syn::TraitItem::Fn(method) = trait_item {
                     let method_path = joined(&path, &method.sig.ident.to_string());
-                    let method_unsafe = method.sig.unsafety.is_some();
-                    insert(
-                        index,
-                        method_path.clone(),
-                        IndexItem {
-                            kind: IndexItemKind::TraitMethod {
-                                is_unsafe: method_unsafe,
-                            },
-                            is_pub: is_pub(&item_trait.vis),
-                        },
-                    );
-                    if method_unsafe {
-                        index.unsafe_fns.insert(method_path.clone());
-                    }
+                    insert(index, method_path.clone(), IndexItemKind::TraitMethod);
                     index
                         .method_index
                         .entry(method.sig.ident.to_string())
@@ -223,16 +144,7 @@ fn index_item(index: &mut CrateIndex, module: &[String], item: &Item) {
         Item::ForeignMod(foreign_mod) => {
             for foreign_item in &foreign_mod.items {
                 if let Some(decl) = foreign_fn_decl(foreign_item) {
-                    let path = joined(module, &decl.name);
-                    insert(
-                        index,
-                        path.clone(),
-                        IndexItem {
-                            kind: IndexItemKind::ExternFn,
-                            is_pub: decl.is_pub,
-                        },
-                    );
-                    index.extern_fns.insert(path);
+                    insert(index, joined(module, &decl.name), IndexItemKind::ExternFn);
                 }
             }
         }
@@ -243,34 +155,22 @@ fn index_item(index: &mut CrateIndex, module: &[String], item: &Item) {
         Item::Struct(item_struct) => insert(
             index,
             joined(module, &item_struct.ident.to_string()),
-            IndexItem {
-                kind: IndexItemKind::Other,
-                is_pub: is_pub(&item_struct.vis),
-            },
+            IndexItemKind::Other,
         ),
         Item::Enum(item_enum) => insert(
             index,
             joined(module, &item_enum.ident.to_string()),
-            IndexItem {
-                kind: IndexItemKind::Other,
-                is_pub: is_pub(&item_enum.vis),
-            },
+            IndexItemKind::Other,
         ),
         Item::Const(item_const) => insert(
             index,
             joined(module, &item_const.ident.to_string()),
-            IndexItem {
-                kind: IndexItemKind::Other,
-                is_pub: is_pub(&item_const.vis),
-            },
+            IndexItemKind::Other,
         ),
         Item::Type(item_type) => insert(
             index,
             joined(module, &item_type.ident.to_string()),
-            IndexItem {
-                kind: IndexItemKind::Other,
-                is_pub: is_pub(&item_type.vis),
-            },
+            IndexItemKind::Other,
         ),
         _ => {}
     }
@@ -278,10 +178,10 @@ fn index_item(index: &mut CrateIndex, module: &[String], item: &Item) {
 
 fn index_impl(index: &mut CrateIndex, module: &[String], item_impl: &syn::ItemImpl) {
     let self_ty = type_path_segments(&item_impl.self_ty);
-    let trait_ty = item_impl
-        .trait_
-        .as_ref()
-        .map(|(_, path, _)| path_segments(path));
+    let trait_last = item_impl.trait_.as_ref().and_then(|(_, path, _)| {
+        let segments = path_segments(path);
+        segments.last().cloned()
+    });
 
     // Item paths for methods use `Self_ty::method` (and
     // `Self_ty::Trait::method` for trait impls) so they are unique and
@@ -292,24 +192,11 @@ fn index_impl(index: &mut CrateIndex, module: &[String], item_impl: &syn::ItemIm
             let name = method.sig.ident.to_string();
             let mut path = module.to_vec();
             path.extend(self_ty.iter().cloned());
-            if let Some(trait_ty) = &trait_ty {
-                if let Some(last) = trait_ty.last() {
-                    path.push(last.clone());
-                }
+            if let Some(trait_last) = &trait_last {
+                path.push(trait_last.clone());
             }
             path.push(name.clone());
-            let is_unsafe = method.sig.unsafety.is_some();
-            insert(
-                index,
-                path.clone(),
-                IndexItem {
-                    kind: IndexItemKind::Method { is_unsafe },
-                    is_pub: is_pub(&method.vis),
-                },
-            );
-            if is_unsafe {
-                index.unsafe_fns.insert(path.clone());
-            }
+            insert(index, path.clone(), IndexItemKind::Method);
             index
                 .method_index
                 .entry(name.clone())
@@ -322,17 +209,19 @@ fn index_impl(index: &mut CrateIndex, module: &[String], item_impl: &syn::ItemIm
     index.impls.push(ImplRecord {
         module: module.to_vec(),
         self_ty,
-        trait_ty,
-        is_unsafe: item_impl.unsafety.is_some(),
         methods,
     });
 }
 
-/// Flattens a `use` tree into exact and glob imports.
+/// Flattens a `use` tree into the exact and glob imports it declares.
 ///
 /// `use a::b::{self, c as d, e::*}` yields exact imports `b` and `d`, and
 /// one glob source `a::b::e`.
-fn flatten_use_tree(tree: &syn::UseTree, prefix: Vec<String>, imports: &mut ModuleImports) {
+pub(crate) fn flatten_use_tree(
+    tree: &syn::UseTree,
+    prefix: Vec<String>,
+    imports: &mut ModuleImports,
+) {
     match tree {
         syn::UseTree::Path(path) => {
             let mut prefix = prefix;
@@ -368,7 +257,7 @@ fn flatten_use_tree(tree: &syn::UseTree, prefix: Vec<String>, imports: &mut Modu
 }
 
 /// Path segments of a `syn::Path` (`a::b::C`), without generic arguments.
-fn path_segments(path: &syn::Path) -> Vec<String> {
+pub(crate) fn path_segments(path: &syn::Path) -> Vec<String> {
     path.segments
         .iter()
         .map(|segment| segment.ident.to_string())
@@ -376,26 +265,27 @@ fn path_segments(path: &syn::Path) -> Vec<String> {
 }
 
 /// Path segments of a type when it is a plain path type; empty otherwise.
-fn type_path_segments(ty: &syn::Type) -> Vec<String> {
+pub(crate) fn type_path_segments(ty: &syn::Type) -> Vec<String> {
     match ty {
         syn::Type::Path(type_path) if type_path.qself.is_none() => path_segments(&type_path.path),
         _ => Vec::new(),
     }
 }
 
-fn joined(module: &[String], name: &str) -> Vec<String> {
+/// Item path of `name` inside `module`.
+pub(crate) fn joined(module: &[String], name: &str) -> Vec<String> {
     let mut path = module.to_vec();
     path.push(name.to_owned());
     path
 }
 
-fn insert(index: &mut CrateIndex, path: Vec<String>, item: IndexItem) {
+fn insert(index: &mut CrateIndex, path: Vec<String>, kind: IndexItemKind) {
     // First definition wins: later duplicates are usually cfg-gated
     // siblings of the first.
-    index.items.entry(path).or_insert(item);
+    index.items.entry(path).or_insert(kind);
 }
 
-fn is_pub(vis: &Visibility) -> bool {
+pub(crate) fn is_pub(vis: &Visibility) -> bool {
     matches!(vis, Visibility::Public(_))
 }
 
@@ -487,19 +377,14 @@ mod tests {
     }
 
     #[test]
-    fn indexes_functions_and_unsafe_fns() {
+    fn indexes_functions() {
         let (index, _dir) = index_of(&[(
             "lib.rs",
             "pub fn safe() {}\nunsafe fn risky() {}\npub unsafe fn pub_risky() {}",
         )]);
-        assert_eq!(
-            index.items[&vec!["safe".to_owned()]].kind,
-            IndexItemKind::Fn { is_unsafe: false }
-        );
-        assert!(index.items[&vec!["safe".to_owned()]].is_pub);
-        assert!(!index.items[&vec!["risky".to_owned()]].is_pub);
-        assert!(index.unsafe_fns.contains(&vec!["risky".to_owned()]));
-        assert!(index.unsafe_fns.contains(&vec!["pub_risky".to_owned()]));
+        for name in ["safe", "risky", "pub_risky"] {
+            assert_eq!(index.items[&vec![name.to_owned()]], IndexItemKind::Fn);
+        }
     }
 
     #[test]
@@ -512,17 +397,12 @@ mod tests {
         let methods = &index.method_index["method"];
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0], vec!["S".to_owned(), "method".to_owned()]);
-        assert!(index
-            .unsafe_fns
-            .contains(&vec!["S".to_owned(), "raw".to_owned()]));
         assert_eq!(
-            index.items[&vec!["T".to_owned()]].kind,
-            IndexItemKind::Trait { is_unsafe: false }
+            index.items[&vec!["S".to_owned(), "raw".to_owned()]],
+            IndexItemKind::Method
         );
-        assert_eq!(
-            index.items[&vec!["U".to_owned()]].kind,
-            IndexItemKind::Trait { is_unsafe: true }
-        );
+        assert_eq!(index.items[&vec!["T".to_owned()]], IndexItemKind::Trait);
+        assert_eq!(index.items[&vec!["U".to_owned()]], IndexItemKind::Trait);
         // Trait method is indexed under the trait path.
         assert!(index
             .items
@@ -539,7 +419,10 @@ mod tests {
         assert!(index.unions.contains("U"));
         assert!(index.mutable_statics.contains(&vec!["COUNTER".to_owned()]));
         assert_eq!(index.mutable_statics.len(), 1);
-        assert!(index.extern_fns.contains(&vec!["socket".to_owned()]));
+        assert_eq!(
+            index.items[&vec!["socket".to_owned()]],
+            IndexItemKind::ExternFn
+        );
     }
 
     #[test]

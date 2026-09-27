@@ -29,7 +29,7 @@ use unsafe_surface_core::{
 
 use crate::classify::{CalleeRef, CrateAnalysis};
 use crate::index::CrateIndex;
-use crate::justify::find_justification;
+use crate::justify::Justifications;
 use crate::limits::Limits;
 use crate::resolve::{
     resolve_method_call, resolve_path_call, GlobalIndex, Instance, InstanceId, Resolution,
@@ -231,6 +231,13 @@ pub fn build_call_graph(
     // Pass 2: resolve call sites into edges (and attach call ops).
     let mut caller_nodes = record_nodes.iter();
     for (instance, input) in inputs.iter().enumerate() {
+        // Safety-comment lookups share one line index per module.
+        let justifications: BTreeMap<&[String], Justifications<'_>> = input
+            .parsed
+            .modules
+            .iter()
+            .map(|module| (module.path.as_slice(), Justifications::new(&module.text)))
+            .collect();
         for record in &input.analysis.functions {
             let Some(caller_id) = caller_nodes.next().copied().flatten() else {
                 continue; // node was truncated by the node limit
@@ -253,6 +260,11 @@ pub fn build_call_graph(
                     ),
                     CalleeRef::Computed { reason, .. } => Resolution::Unresolved(reason.clone()),
                 };
+                // Safety comments are looked up in the caller's source.
+                let justification = justifications
+                    .get(record.module.as_slice())
+                    .map(|scanner| scanner.find(call.location.line))
+                    .unwrap_or(SafetyJustification::Absent);
                 match resolution {
                     Resolution::MayCall(candidates) => {
                         let candidate_count = candidates.len();
@@ -273,8 +285,7 @@ pub fn build_call_graph(
                                     callee_id,
                                     &call.location,
                                     Confidence::Inferred,
-                                    input,
-                                    &record.module,
+                                    justification,
                                 );
                                 linked += 1;
                             }
@@ -328,8 +339,7 @@ pub fn build_call_graph(
                             callee_id,
                             &call.location,
                             edge_kind.confidence(),
-                            input,
-                            &record.module,
+                            justification,
                         );
                     }
                     Resolution::NotCallable => {}
@@ -356,8 +366,7 @@ fn attach_call_ops(
     callee_id: NodeId,
     call_site: &SourceLocation,
     confidence: Confidence,
-    input: &CrateInput<'_>,
-    caller_module: &[String],
+    justification: SafetyJustification,
 ) {
     let (callee_unsafe, callee_extern, callee_path) = {
         let callee = &graph.nodes[callee_id as usize];
@@ -370,15 +379,6 @@ fn attach_call_ops(
     if !callee_unsafe {
         return;
     }
-    // Safety comments are looked up in the caller's source text.
-    let justification = input
-        .parsed
-        .modules
-        .iter()
-        .find(|m| m.path == caller_module)
-        .map(|m| find_justification(&m.text, call_site.line))
-        .unwrap_or(SafetyJustification::Absent);
-
     let kind = if callee_extern {
         UnsafeOpKind::FfiCall
     } else {
