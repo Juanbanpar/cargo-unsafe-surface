@@ -94,11 +94,11 @@ unresolved calls feed `fail_on_unresolved_calls` /
 | --- | --- | --- |
 | `unsafe {}` block | syntax | confirmed |
 | `unsafe fn` / calls to it | syntax / resolved callee | confirmed (direct) / inferred (method) |
-| FFI calls | resolved callee declared in `extern` block | confirmed |
+| FFI calls | resolved callee declared in `extern` block without `safe fn` | confirmed |
 | raw pointer deref | dereference expr in unsafe context | inferred |
 | `transmute` | call path ending in `transmute`/`transmute_copy` | confirmed |
 | inline assembly | `asm!`/`global_asm!`/`naked_asm!` macro | confirmed |
-| union field access | field access on param/`let` annotated with a known union | confirmed |
+| union field read | field access in unsafe context on param/`let` annotated with a known union | confirmed |
 | `static mut` access | path matching a known `static mut` name | inferred |
 | `MaybeUninit` | path containing `MaybeUninit` | inferred |
 | unchecked APIs | method name containing `_unchecked` | inferred |

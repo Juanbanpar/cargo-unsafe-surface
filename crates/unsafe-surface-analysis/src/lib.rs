@@ -36,5 +36,5 @@ pub use classify::{classify_crate, CallSite, CalleeRef, CrateAnalysis, FunctionR
 pub use engine::{analyze, AnalysisConfig, AnalysisOutcome};
 pub use error::AnalysisError;
 pub use graph::{build_call_graph, CallGraph, CrateInput, EdgeMeta, GraphNode, NodeId};
-pub use limits::Limits;
+pub use limits::{FileBudget, Limits};
 pub use reach::Reachability;

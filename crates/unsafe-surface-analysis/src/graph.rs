@@ -61,7 +61,8 @@ pub struct GraphNode {
     pub kind: FunctionKind,
     /// Whether the item is `pub`.
     pub is_pub: bool,
-    /// Whether this is an `unsafe fn` (foreign functions count).
+    /// Whether calling this item requires `unsafe` (`unsafe fn`, or a
+    /// foreign function without a `safe fn` declaration).
     pub is_unsafe_fn: bool,
     /// Definition location.
     pub location: SourceLocation,
@@ -250,6 +251,7 @@ pub fn build_call_graph(
                         *receiver_is_self,
                         receiver_local.as_deref(),
                     ),
+                    CalleeRef::Computed { reason, .. } => Resolution::Unresolved(reason.clone()),
                 };
                 match resolution {
                     Resolution::MayCall(candidates) => {
@@ -394,5 +396,6 @@ fn callee_text(callee: &CalleeRef) -> String {
     match callee {
         CalleeRef::Path { segments } => segments.join("::"),
         CalleeRef::Method { name, .. } => format!("<receiver>.{name}"),
+        CalleeRef::Computed { text, .. } => text.clone(),
     }
 }

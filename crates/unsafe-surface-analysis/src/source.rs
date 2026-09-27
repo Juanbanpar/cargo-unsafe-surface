@@ -23,7 +23,7 @@ use unsafe_surface_core::{Diagnostic, SourceLocation};
 
 use crate::cfg_eval::{CfgEvaluator, CfgResult};
 use crate::error::AnalysisError;
-use crate::limits::Limits;
+use crate::limits::{FileBudget, Limits};
 
 /// One parsed module of a crate.
 #[derive(Debug)]
@@ -62,6 +62,9 @@ pub struct ParseContext<'a> {
     pub limits: &'a Limits,
     /// Root used to relativize display paths (usually the workspace root).
     pub display_root: Option<&'a Path>,
+    /// Run-wide file budget shared by all crates of one analysis run (see
+    /// [`Limits::max_total_files`]).
+    pub files: &'a FileBudget,
 }
 
 /// Parses a crate starting at `root_file`.
@@ -127,18 +130,17 @@ impl Walker<'_, '_> {
         depth: usize,
     ) -> Result<(), AnalysisError> {
         let is_root = module_path.is_empty();
-        if depth > self.context.limits.max_module_depth {
-            self.diagnostics.push(Diagnostic::warning(format!(
-                "module depth limit ({}) exceeded at {}; subtree skipped",
-                self.context.limits.max_module_depth,
-                file.display()
-            )));
-            return Ok(());
-        }
         if self.files_parsed >= self.context.limits.max_files_per_crate {
             self.diagnostics.push(Diagnostic::warning(format!(
                 "per-crate file limit ({}) exceeded; remaining modules skipped",
                 self.context.limits.max_files_per_crate
+            )));
+            return Ok(());
+        }
+        if self.context.files.used() >= self.context.limits.max_total_files {
+            self.diagnostics.push(Diagnostic::warning(format!(
+                "total file limit ({}) exceeded; remaining modules skipped",
+                self.context.limits.max_total_files
             )));
             return Ok(());
         }
@@ -164,6 +166,10 @@ impl Walker<'_, '_> {
             // sharing exists); silently keep the first occurrence.
             return Ok(());
         }
+        // Count every file that is attempted: unreadable, oversized and
+        // unparseable files must not escape the file limits.
+        self.files_parsed += 1;
+        self.context.files.record();
 
         let file_display = display_path(file, self.context.display_root);
 
@@ -222,7 +228,6 @@ impl Walker<'_, '_> {
                 return Ok(());
             }
         };
-        self.files_parsed += 1;
         let text: Rc<str> = Rc::from(text.as_str());
 
         // Directory contexts for child module resolution. Rust uses two
@@ -279,14 +284,11 @@ impl Walker<'_, '_> {
         depth: usize,
     ) -> Vec<Item> {
         let mut kept = Vec::new();
-        for item in items {
-            let cfg_result = self.context.cfg.evaluate_attrs(attrs_of(&item));
-            if !cfg_result.keeps_item() {
+        for mut item in items {
+            if !self.cfg_keeps(attrs_of(&item)) {
                 continue;
             }
-            if cfg_result == CfgResult::Unknown {
-                self.unknown_cfg_items += 1;
-            }
+            self.filter_sub_items(&mut item);
 
             if let Item::Mod(item_mod) = &item {
                 self.handle_mod(item_mod, module_path, mod_context, current, depth);
@@ -294,6 +296,40 @@ impl Walker<'_, '_> {
             kept.push(item);
         }
         kept
+    }
+
+    /// Whether the `#[cfg]` gates of an item allow it, accounting for the
+    /// over-approximation of unknown predicates.
+    fn cfg_keeps(&mut self, attrs: &[syn::Attribute]) -> bool {
+        let result = self.context.cfg.evaluate_attrs(attrs);
+        if result == CfgResult::Unknown {
+            self.unknown_cfg_items += 1;
+        }
+        result.keeps_item()
+    }
+
+    /// Drops `#[cfg]`-disabled sub-items: impl methods, trait items and
+    /// foreign items are gated individually in real code, just like
+    /// module-level items.
+    fn filter_sub_items(&mut self, item: &mut Item) {
+        match item {
+            Item::Impl(item_impl) => {
+                item_impl
+                    .items
+                    .retain(|sub| self.cfg_keeps(impl_item_attrs(sub)));
+            }
+            Item::Trait(item_trait) => {
+                item_trait
+                    .items
+                    .retain(|sub| self.cfg_keeps(trait_item_attrs(sub)));
+            }
+            Item::ForeignMod(foreign_mod) => {
+                foreign_mod
+                    .items
+                    .retain(|sub| self.cfg_keeps(foreign_item_attrs(sub)));
+            }
+            _ => {}
+        }
     }
 
     fn handle_mod(
@@ -307,6 +343,17 @@ impl Walker<'_, '_> {
         let name = item_mod.ident.to_string();
         let mut child_path = module_path.to_vec();
         child_path.push(name.clone());
+
+        // The depth limit is enforced here, the single recursion point,
+        // so file modules *and* inline `mod name { ... }` blocks are
+        // bounded: inline nesting recurses without ever touching a file.
+        if depth + 1 > self.context.limits.max_module_depth {
+            self.diagnostics.push(Diagnostic::warning(format!(
+                "module depth limit ({}) exceeded at {}; subtree skipped",
+                self.context.limits.max_module_depth, current.display
+            )));
+            return;
+        }
 
         if let Some((_, items)) = &item_mod.content {
             // Inline module `mod name { ... }`: plain `mod` declarations
@@ -404,6 +451,39 @@ fn attrs_of(item: &Item) -> &[syn::Attribute] {
     }
 }
 
+/// Attributes of an impl item (empty for kinds that cannot carry `cfg`).
+fn impl_item_attrs(item: &syn::ImplItem) -> &[syn::Attribute] {
+    match item {
+        syn::ImplItem::Const(i) => &i.attrs,
+        syn::ImplItem::Fn(i) => &i.attrs,
+        syn::ImplItem::Type(i) => &i.attrs,
+        syn::ImplItem::Macro(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+/// Attributes of a trait item (empty for kinds that cannot carry `cfg`).
+fn trait_item_attrs(item: &syn::TraitItem) -> &[syn::Attribute] {
+    match item {
+        syn::TraitItem::Const(i) => &i.attrs,
+        syn::TraitItem::Fn(i) => &i.attrs,
+        syn::TraitItem::Type(i) => &i.attrs,
+        syn::TraitItem::Macro(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+/// Attributes of a foreign item (empty for kinds that cannot carry `cfg`).
+fn foreign_item_attrs(item: &syn::ForeignItem) -> &[syn::Attribute] {
+    match item {
+        syn::ForeignItem::Fn(i) => &i.attrs,
+        syn::ForeignItem::Static(i) => &i.attrs,
+        syn::ForeignItem::Type(i) => &i.attrs,
+        syn::ForeignItem::Macro(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
 /// Display path relative to `root` when possible, with forward slashes.
 fn display_path(file: &Path, root: Option<&Path>) -> String {
     match root.and_then(|root| file.strip_prefix(root).ok()) {
@@ -438,10 +518,12 @@ mod tests {
         }
         let values = CfgValues::new();
         let features = BTreeSet::new();
+        let files = FileBudget::new();
         let context = ParseContext {
             cfg: CfgEvaluator::new(&values, &features),
             limits: &limits,
             display_root: Some(dir.path()),
+            files: &files,
         };
         let parsed = parse_crate(&root.unwrap(), &context).unwrap();
         (parsed, dir)
@@ -512,6 +594,50 @@ mod tests {
         let paths = module_paths(&parsed);
         assert!(!paths.contains(&vec!["gone".to_string()]));
         assert!(paths.contains(&vec!["kept".to_string()]));
+    }
+
+    #[test]
+    fn cfg_disabled_sub_items_are_dropped() {
+        // Methods, trait items and foreign items carry their own `#[cfg]`
+        // gates and must be filtered like module-level items.
+        let (parsed, _dir) = parse(&[(
+            "lib.rs",
+            "struct S;\n\
+             impl S {\n\
+             \x20   #[cfg(any())]\n\
+             \x20   fn gone(&self) {}\n\
+             \x20   fn kept(&self) {}\n\
+             }\n\
+             trait T {\n\
+             \x20   #[cfg(any())]\n\
+             \x20   fn gone();\n\
+             \x20   fn kept();\n\
+             }\n\
+             extern \"C\" {\n\
+             \x20   #[cfg(any())]\n\
+             \x20   fn gone();\n\
+             \x20   fn kept();\n\
+             }\n",
+        )]);
+        let root = parsed
+            .modules
+            .iter()
+            .find(|m| m.path.is_empty())
+            .expect("root module");
+        let mut kept_counts = Vec::new();
+        for item in &root.items {
+            match item {
+                Item::Impl(i) => kept_counts.push(i.items.len()),
+                Item::Trait(i) => kept_counts.push(i.items.len()),
+                Item::ForeignMod(i) => kept_counts.push(i.items.len()),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            kept_counts,
+            [1, 1, 1],
+            "each container must keep only its cfg-enabled item"
+        );
     }
 
     #[test]
@@ -596,15 +722,123 @@ mod tests {
     }
 
     #[test]
+    fn file_count_limit_counts_unparseable_files() {
+        // Files that fail to parse are still attempted work and must
+        // count against the limit instead of being read without end.
+        let mut files: Vec<(String, String)> = vec![(
+            "lib.rs".to_owned(),
+            (0..8).map(|i| format!("mod m{i};\n")).collect(),
+        )];
+        for i in 0..8 {
+            files.push((format!("m{i}.rs"), "fn broken((".to_owned()));
+        }
+        let limits = Limits {
+            max_files_per_crate: 3,
+            ..Limits::default()
+        };
+        let borrowed: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(name, content)| (name.as_str(), content.as_str()))
+            .collect();
+        let (parsed, _dir) = parse_with_limits(&borrowed, limits);
+        let syntax_errors = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("syntax error"))
+            .count();
+        assert_eq!(
+            syntax_errors, 2,
+            "only the remaining budget may be attempted: {:?}",
+            parsed.diagnostics
+        );
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("file limit")));
+    }
+
+    #[test]
+    fn total_file_limit_spans_crates() {
+        // One budget bounds the whole run: two crates of two files each
+        // share `max_total_files = 2`.
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            let base = dir.path().join(name);
+            fs::create_dir_all(&base).unwrap();
+            fs::write(base.join("lib.rs"), "mod m;\n").unwrap();
+            fs::write(base.join("m.rs"), "fn f() {}\n").unwrap();
+        }
+        let values = CfgValues::new();
+        let features = BTreeSet::new();
+        let limits = Limits {
+            max_total_files: 2,
+            ..Limits::default()
+        };
+        let files = FileBudget::new();
+        let context = ParseContext {
+            cfg: CfgEvaluator::new(&values, &features),
+            limits: &limits,
+            display_root: Some(dir.path()),
+            files: &files,
+        };
+        let first = parse_crate(&dir.path().join("a/lib.rs"), &context).unwrap();
+        let second = parse_crate(&dir.path().join("b/lib.rs"), &context).unwrap();
+        assert_eq!(files.used(), 2);
+        assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+        assert!(
+            second
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("total file limit")),
+            "the second crate must hit the run-wide budget: {:?}",
+            second.diagnostics
+        );
+    }
+
+    #[test]
+    fn inline_module_nesting_is_depth_limited() {
+        // Inline modules recurse without touching any file; the depth
+        // limit must stop hostile nesting.
+        let mut src = String::new();
+        for i in 0..20 {
+            src.push_str(&format!("mod m{i} {{\n"));
+        }
+        src.push_str("fn deep() {}\n");
+        for _ in 0..20 {
+            src.push_str("}\n");
+        }
+        let limits = Limits {
+            max_module_depth: 4,
+            ..Limits::default()
+        };
+        let (parsed, _dir) = parse_with_limits(&[("lib.rs", src.as_str())], limits);
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("module depth limit")),
+            "expected a depth diagnostic: {:?}",
+            parsed.diagnostics
+        );
+        assert!(
+            !module_paths(&parsed).iter().any(|p| p.len() > 4),
+            "modules beyond the limit must be skipped: {:?}",
+            module_paths(&parsed)
+        );
+    }
+
+    #[test]
     fn unreadable_root_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let values = CfgValues::new();
         let features = BTreeSet::new();
         let limits = Limits::default();
+        let files = FileBudget::new();
         let context = ParseContext {
             cfg: CfgEvaluator::new(&values, &features),
             limits: &limits,
             display_root: None,
+            files: &files,
         };
         let result = parse_crate(&dir.path().join("missing.rs"), &context);
         assert!(matches!(

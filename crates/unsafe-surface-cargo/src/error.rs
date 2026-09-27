@@ -30,6 +30,10 @@ pub enum CargoError {
     #[error("no packages selected for analysis")]
     NoPackages,
 
+    /// The selected packages provide no target matching the request.
+    #[error("the selected packages provide no target matching the requested selection")]
+    NoTargets,
+
     /// A required path was not valid UTF-8 or did not exist.
     #[error("invalid path {0:?}: {1}")]
     InvalidPath(PathBuf, &'static str),

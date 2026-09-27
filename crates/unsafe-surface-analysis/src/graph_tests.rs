@@ -14,7 +14,7 @@ use crate::cfg_eval::CfgEvaluator;
 use crate::classify::classify_crate;
 use crate::graph::{build_call_graph, CallGraph, CrateInput, NodeId};
 use crate::index::build_index;
-use crate::limits::Limits;
+use crate::limits::{FileBudget, Limits};
 use crate::source::{parse_crate, ParseContext, ParsedCrate};
 
 /// An analysed in-memory crate.
@@ -30,10 +30,12 @@ fn analyze_crate(name: &str, root: &Path, display_root: &Path) -> TestCrate {
     let values = CfgValues::new();
     let features = BTreeSet::new();
     let limits = Limits::default();
+    let files = FileBudget::new();
     let context = ParseContext {
         cfg: CfgEvaluator::new(&values, &features),
         limits: &limits,
         display_root: Some(display_root),
+        files: &files,
     };
     let parsed = parse_crate(root, &context).expect("crate root must parse");
     let index = build_index(&parsed);
@@ -254,6 +256,98 @@ pub fn call() {
 }
 
 #[test]
+fn self_paths_cover_trait_provided_items() {
+    // `Self::x` inside `impl T for X` must find both items of the impl
+    // block (`…::X::T::x`) and the trait's default implementations
+    // (`…::T::x`), not just inherent `…::X::x`.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "solo",
+        &[(
+            "lib.rs",
+            r#"
+trait T {
+    fn provided() {}
+    fn run();
+}
+struct X;
+impl T for X {
+    fn run() {
+        Self::from_the_impl();
+        Self::provided();
+    }
+    fn from_the_impl() {}
+}
+"#,
+        )],
+    );
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    let callees = callee_paths(&graph, "solo::X::T::run");
+    assert!(
+        callees.contains(&"solo::X::T::from_the_impl".to_owned()),
+        "impl items must resolve beside the method: {callees:?}"
+    );
+    assert!(
+        callees.contains(&"solo::T::provided".to_owned()),
+        "trait defaults must resolve through the trait segment: {callees:?}"
+    );
+}
+
+#[test]
+fn binary_paths_resolve_to_their_library() {
+    // `pkg::helper()` inside the binary must resolve to the library's
+    // `helper` (extern-crate semantics), not to the binary's own.
+    let dir = tempfile::tempdir().unwrap();
+    let lib_root = write_crate(dir.path(), "pkg", &[("lib.rs", "pub fn helper() {}\n")]);
+    let bin_root = write_crate(
+        dir.path(),
+        "pkg",
+        &[(
+            "main.rs",
+            "fn main() {\n    pkg::helper();\n}\nfn helper() {}\n",
+        )],
+    );
+    let lib = analyze_crate("pkg", &lib_root, dir.path());
+    let bin = analyze_crate("pkg", &bin_root, dir.path());
+    let inputs = [
+        CrateInput {
+            package: &lib.package,
+            is_lib: true,
+            parsed: &lib.parsed,
+            index: &lib.index,
+            analysis: &lib.analysis,
+        },
+        CrateInput {
+            package: &bin.package,
+            is_lib: false,
+            parsed: &bin.parsed,
+            index: &bin.index,
+            analysis: &bin.analysis,
+        },
+    ];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    let lib_helper = graph.node_in(0, &["helper".to_owned()]).unwrap();
+    let bin_helper = graph.node_in(1, &["helper".to_owned()]).unwrap();
+    assert_ne!(lib_helper, bin_helper, "the fixture needs both definitions");
+    let main = graph.node_in(1, &["main".to_owned()]).unwrap();
+    let callees: Vec<NodeId> = graph.edges[main as usize].keys().copied().collect();
+    assert_eq!(
+        callees,
+        [lib_helper],
+        "the binary's own helper must not shadow the library's"
+    );
+}
+
+#[test]
 fn unsafe_and_ffi_calls_attach_ops_to_caller() {
     let (graph, _dir) = scenario();
     let main_id = graph.node(&ItemPath::parse("app::main").unwrap()).unwrap();
@@ -318,6 +412,49 @@ fn unresolved_calls_carry_precise_reasons() {
     // no unresolved call.
     assert!(callee_paths(&graph, "app::make").is_empty());
     assert!(unresolved_reasons(&graph, "Tuple").is_empty());
+}
+
+#[test]
+fn computed_callees_stay_unresolved() {
+    // `(s.cb)()` and `(g)()` cannot name an item the way `f(x)` does;
+    // the sites must surface as uncertainty instead of disappearing.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "solo",
+        &[(
+            "lib.rs",
+            r#"
+struct S {
+    cb: fn(),
+}
+fn f(s: S, g: fn()) {
+    (s.cb)();
+    (g)();
+}
+"#,
+        )],
+    );
+    let solo = analyze_crate("solo", &root, dir.path());
+    let inputs = [CrateInput {
+        package: &solo.package,
+        is_lib: true,
+        parsed: &solo.parsed,
+        index: &solo.index,
+        analysis: &solo.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    assert_eq!(
+        unresolved_reasons(&graph, "<field value>"),
+        vec![UnresolvedReason::FunctionPointer],
+        "a field value is a computed callee"
+    );
+    // A parenthesized *path* resolves like the bare path: `g` is a
+    // function-pointer parameter.
+    assert_eq!(
+        unresolved_reasons(&graph, "g"),
+        vec![UnresolvedReason::FunctionPointer]
+    );
 }
 
 #[test]
@@ -512,6 +649,67 @@ impl W {
     );
     let assoc_callees = callee_paths(&graph, "solo::W::assoc");
     assert_eq!(assoc_callees, vec!["solo::W::run2".to_owned()]);
+}
+
+#[test]
+fn safe_foreign_functions_are_not_unsafe_calls() {
+    // Edition 2024: `safe fn` inside `unsafe extern` is audited and safe
+    // to call. Syn 2 keeps the form verbatim; it must still be indexed,
+    // and its calls must not be unsafe operations.
+    let dir = tempfile::tempdir().unwrap();
+    let root = write_crate(
+        dir.path(),
+        "safeffi",
+        &[(
+            "lib.rs",
+            r#"
+unsafe extern "C" {
+    safe fn audited(x: i32) -> i32;
+    fn risky(x: i32) -> i32;
+}
+
+pub fn call_both() {
+    let _ = audited(1);
+    let _ = risky(2);
+}
+"#,
+        )],
+    );
+    let safeffi = analyze_crate("safeffi", &root, dir.path());
+    // The declaration is inventoried, marked as the `safe` form.
+    assert!(
+        safeffi
+            .analysis
+            .structural
+            .iter()
+            .any(|s| s.detail == "safe extern \"C\" fn audited"),
+        "safe declaration must be inventoried: {:?}",
+        safeffi.analysis.structural
+    );
+    let inputs = [CrateInput {
+        package: &safeffi.package,
+        is_lib: true,
+        parsed: &safeffi.parsed,
+        index: &safeffi.index,
+        analysis: &safeffi.analysis,
+    }];
+    let graph = build_call_graph(&inputs, &Limits::default(), Default::default());
+    // Both declarations resolve as callees…
+    let audited = graph
+        .node(&ItemPath::parse("safeffi::audited").unwrap())
+        .expect("safe fn must be indexed");
+    assert!(!graph.nodes[audited as usize].is_unsafe_fn);
+    // …but only the unsafe declaration attaches an FFI op to the caller.
+    let caller = graph
+        .node(&ItemPath::parse("safeffi::call_both").unwrap())
+        .unwrap();
+    let ffi: Vec<_> = graph.nodes[caller as usize]
+        .ops
+        .iter()
+        .filter(|op| op.kind == UnsafeOpKind::FfiCall)
+        .collect();
+    assert_eq!(ffi.len(), 1, "only the unsafe declaration: {ffi:?}");
+    assert_eq!(ffi[0].detail.as_deref(), Some("safeffi::risky"));
 }
 
 #[test]

@@ -18,7 +18,7 @@ use crate::classify::{classify_crate, CrateAnalysis};
 use crate::error::AnalysisError;
 use crate::graph::{build_call_graph, CallGraph, CrateInput, NodeId};
 use crate::index::{build_index, CrateIndex};
-use crate::limits::Limits;
+use crate::limits::{FileBudget, Limits};
 use crate::reach::Reachability;
 use crate::source::{parse_crate, ParseContext, ParsedCrate};
 
@@ -86,7 +86,9 @@ pub fn analyze(
         .map(|w| Diagnostic::info(w.clone()))
         .collect();
 
-    // 1. Parse and classify every crate instance.
+    // 1. Parse and classify every crate instance. One file budget spans
+    //    the whole run (see `Limits::max_total_files`).
+    let files = FileBudget::new();
     let mut bundles: Vec<CrateBundle> = Vec::new();
     for package in &workspace.packages {
         let selected = workspace.selected.contains(&package.id);
@@ -124,6 +126,7 @@ pub fn analyze(
                 cfg: evaluator,
                 limits: &config.limits,
                 display_root: Some(workspace.workspace_root.as_std_path()),
+                files: &files,
             };
             match parse_crate(&root, &context) {
                 Ok(parsed) => {
