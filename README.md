@@ -160,8 +160,13 @@ cargo unsafe-surface --format text
 ```
 
 JSON output uses a versioned schema documented in
-[docs/json-schema.md](docs/json-schema.md). SARIF is available for integration
-with code-scanning tools.
+[docs/json-schema.md](docs/json-schema.md). SARIF 2.1.0 output is available
+for code-scanning tools such as GitHub code scanning: every finding becomes
+a result — reachable ones at their confidence level, unreachable ones as
+notes — alongside structural findings, diagnostics as invocation
+notifications, and one aggregated result for unresolved calls. Results carry
+the package, confidence, `SAFETY:` justification, call path and finding id
+of the JSON report as properties.
 
 ### Example output
 
