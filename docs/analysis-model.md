@@ -123,11 +123,13 @@ builds). Unknown predicates (e.g. build-script cfgs) keep the item
 * `--lib`: every `pub` function of the library (over-approximation of the
   public API, since visibility through `pub use` re-exports and
   restricted visibilities is not modelled).
-* `--entry crate::path::func`: an explicit item path. A `crate::` prefix
-  matches no crate by name; the item path is looked up in every analysed
-  crate instance (one entry point per instance that defines it).
+* `--entry crate::path::func`: an explicit item path, *added* to the
+  target selection rather than replacing it. A `crate::` prefix matches
+  no crate by name; the item path is looked up in every analysed crate
+  instance (one entry point per instance that defines it).
 * Default: all binary targets of the selected packages; if none exist,
-  their libraries.
+  their libraries. The default applies whenever `--bin`/`--lib` do not
+  narrow the targets — including when only `--entry` is given.
 
 ## Reachability
 

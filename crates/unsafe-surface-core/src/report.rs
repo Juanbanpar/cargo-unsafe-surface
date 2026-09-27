@@ -77,9 +77,6 @@ pub enum Reachability {
     /// The operation exists in the analysed sources but no analysed entry
     /// point reaches it.
     Unreachable,
-    /// A module-level construct (impl block, static, extern block, …) for
-    /// which function-level reachability does not apply.
-    Structural,
 }
 
 /// An unsafe operation tied to its enclosing function and, when reachable,

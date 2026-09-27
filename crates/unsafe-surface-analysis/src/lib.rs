@@ -3,7 +3,7 @@
 //!
 //! The default backend parses Rust sources with `syn`; it never executes
 //! build scripts, procedural macros or binaries from the analysed
-//! repository. See `docs/adr/0001-analysis-approach.md` for the rationale.
+//! repository. See `docs/analysis-model.md` for the rationale.
 //!
 //! # Pipeline
 //!
