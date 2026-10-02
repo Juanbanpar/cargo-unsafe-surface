@@ -32,12 +32,12 @@ unsafe-surface-report = { version = "0.1.0", path = "crates/unsafe-surface-repor
 # Shared third-party dependencies. Versions are tracked in Cargo.lock.
 anyhow = "1.0"
 camino = "1.1"
-cargo_metadata = "0.19"
+cargo_metadata = "0.23"
 clap = { version = "4.5", features = ["derive"] }
 proc-macro2 = { version = "1.0", features = ["span-locations"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-syn = { version = "2.0", default-features = false, features = [
+syn = { version = "3.0", default-features = false, features = [
     "clone-impls",
     "extra-traits",
     "full",
@@ -46,10 +46,10 @@ syn = { version = "2.0", default-features = false, features = [
     "printing",
 ] }
 thiserror = "2.0"
-toml = "0.8"
+toml = "1.1"
 
 # Development dependencies.
-criterion = "0.5"
+criterion = "0.8"
 insta = "1.40"
 proptest = "1.5"
 tempfile = "3.10"
