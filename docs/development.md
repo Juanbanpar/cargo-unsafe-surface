@@ -17,33 +17,19 @@ Dependency direction is strictly `cli → analysis → cargo/core` and
 `cli → report → core`. The core model has no logic and no dependencies
 beyond serde/thiserror.
 
-## Required checks (must pass before every commit)
+## Checks
 
 ```console
 cargo fmt --all
-cargo check --workspace --all-targets --all-features
-cargo test --workspace --all-features
-```
-
-Milestone commits additionally require:
-
-```console
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo doc --workspace --all-features --no-deps   # RUSTDOCFLAGS=-Dwarnings in CI
+cargo test --workspace --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 ```
-
-Optional but configured: `cargo deny check` (licences/advisories),
-`cargo llvm-cov` (coverage), `cargo bench -p unsafe-surface-analysis`
-(graph benchmarks).
 
 ## Toolchain notes
 
 * MSRV is **1.85** (`rust-version` in the workspace manifest; verified
   in CI).
-* Development on Fedora Silverblue (or any host without a system C
-  toolchain) works inside a toolbox/distrobox container with `gcc`
-  installed: `toolbox enter`, then use cargo normally. The host-only
-  rustup toolchain cannot link without `cc`.
 * Integration tests run the real binary against `tests/fixtures/` in
   offline mode; fixtures are *parsed*, never built, and are excluded
   from the main workspace.
@@ -56,7 +42,6 @@ Optional but configured: `cargo deny check` (licences/advisories),
   review diffs before committing). Important fields are *also* asserted
   structurally; snapshots must not hide semantic regressions.
 * Property tests use `proptest` for reachability and path validity.
-* Every bug fix ships with a regression test.
 * Tests must be deterministic, offline and isolated (tempdirs).
 
 ## CI
@@ -67,12 +52,3 @@ tests on stable + MSRV (1.85.0), docs, release build, all on Linux.
 `.github/workflows/advisory.yml` (weekly/manual): `cargo deny`, coverage,
 macOS/Windows builds. Advisory failures are reviewed during maintenance;
 they never gate PRs.
-
-## Adding a new unsafe-op kind
-
-1. Add the variant to `UnsafeOpKind` (core) with label + serde name.
-2. Detect it in `classify.rs` (or in graph resolution).
-3. Add SARIF rule mapping (`sarif.rs` `RULE_KINDS`).
-4. Tests: classifier unit test, fixture example, report test.
-5. Update `docs/analysis-model.md` and this list if the pipeline shape
-   changes.

@@ -1,8 +1,6 @@
 # Contributing
 
-Thanks for your interest! This project welcomes bug reports, fixes,
-analysis-accuracy improvements and documentation work. Contributions are
-licensed under the project's licence, GPL-3.0-or-later.
+Contributions are licensed under GPL-3.0-or-later.
 
 ## Ground rules
 
@@ -18,19 +16,14 @@ licensed under the project's licence, GPL-3.0-or-later.
 
 ## Workflow
 
-1. Discuss large changes in an issue first.
-2. Follow the commit discipline: atomic commits, imperative messages,
-   tests included, docs updated when behaviour changes. Do not mix
-   refactors with behaviour changes or formatting with features.
-3. Run the required checks from
+1. Keep commits focused and update docs when behaviour changes.
+2. Run the checks from
    [docs/development.md](docs/development.md) before pushing.
-4. Bug fixes must include a regression test.
-5. If you change anything described in `docs/` (analysis model, threat
-   model, schema, policy, CI), update the documents in the same commit.
+3. Bug fixes must include a regression test.
 
 ## JSON schema stability
 
 The JSON report schema is versioned (`schema_version: 1`). Within a
 version, only additive changes are allowed. Breaking changes require a
 schema version bump and a migration note in
-[docs/json-schema.md](json-schema.md).
+[docs/json-schema.md](docs/json-schema.md).
